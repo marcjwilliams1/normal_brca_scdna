@@ -1,0 +1,675 @@
+---
+title: "Figure 2: Landscape plots"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width=7, fig.height=6.69)
+```
+
+```{r}
+library(here)
+library(ggpubr)
+source(here("src/setup.R"))
+source(here("src/landscape_plots.R"))
+```
+
+## Read in data
+
+```{r}
+dat <- get_data(read_all = T, filtbins = T)
+cells_to_keep <- dat$metrics %>% 
+  filter(keep_cell == TRUE) %>% 
+  filter(filter_gcbias == FALSE) %>% 
+  filter(cell_type1 %in% c("Basal", "Luminal")) %>% 
+  pull(cell_id)
+
+gain_col <- config$clrs$gain_loss2$Gain
+loss_col <- config$clrs$gain_loss2$Loss
+```
+
+Remove some bins close to centromeres which can have artifactual copy number calls due to mapping issues close to the centromere.
+
+```{r}
+cndat <- dat$cn %>% 
+    as.data.table() %>%
+  .[cell_id %in% cells_to_keep] %>% 
+  remove_centromeres()
+```
+
+## Frequency across cell types
+
+
+```{r, fig.width = 15}
+plbasal <- cndat %>%
+  filter(cell_type1 == "Basal") %>% 
+  .[, list(
+    gain = 100 * sum(state > ploidy, na.rm = TRUE) / .N,
+    loss = 100 * sum(state < ploidy, na.rm = TRUE) / .N,
+    n = .N
+  ), by = .(chr, start, end)] %>%
+  plottinglist_()
+
+plluminal <- cndat %>%
+  filter(cell_type1 == "Luminal") %>% 
+  .[, list(
+    gain = 100 * sum(state > ploidy, na.rm = TRUE) / .N,
+    loss = 100 * sum(state < ploidy, na.rm = TRUE) / .N,
+    n = .N
+  ), by = .(chr, start, end)] %>%
+  plottinglist_()
+
+```
+
+### Basal
+
+```{r, fig.width = 10}
+theme_set(theme_cowplot(font_size = 7, line_size = 0.25))
+(landscape_basal <- genplot(plbasal, 
+                            gain_col = gain_col,
+                            loss_col = loss_col,
+                            breaks = 100 * c(0, 0.005, 0.01), 
+                            limits = 100 * c(0, 0.015), 
+                            losslabels = c("0", "0.5", "1.0"),
+                            mytitle = "Basal"))
+```
+
+### Luminal
+
+```{r, fig.width = 10}
+(landscape_luminal <- genplot(plluminal, 
+                            gain_col = gain_col,
+                            loss_col = loss_col,
+                            breaks = 100 * c(0, 0.005, 0.01), 
+                            limits = 100 * c(0, 0.015), 
+                            losslabels = c("0", "0.5", "1.0"),
+                            mytitle = "Luminal"))
+```
+
+
+## Per chromosome arm plots
+
+### Single chromosomes
+
+```{r}
+
+singlearm_freq_cohort1 <- dat$arm_frequencies
+
+symnum.args <- list(cutpoints = c( 0.00, 0.001, 0.01, 0.05, 1), symbols = c("***", "**", "*", "ns"))
+x1 <- dat$arm_frequencies %>% 
+  filter(n_cells > config$cutoff)
+
+mean_vals <- x1 %>% 
+  filter(n_cells > config$cutoff) %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  group_by(name, chrarm, gain_loss) %>% 
+  summarise(freq_event_mean = 100 * mean(freq_event),
+            freq_event_median = 100 * median(freq_event)) %>% 
+  ungroup() %>% 
+  mutate(x = freq_event_mean, freq_event = freq_event_mean) %>% 
+  filter(x > 0.1)
+
+gbox <- x1 %>% 
+  filter(n_cells > config$cutoff) %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  filter(name %in% mean_vals$name) %>% 
+  group_by(name) %>% 
+  mutate(x = mean(freq_event)) %>% 
+  ungroup() %>% 
+  mutate(freq_event = freq_event * 100) %>% 
+  ggplot(aes(x = fct_reorder(name, x, .desc = T), y = freq_event, fill = cell_type1)) +
+  geom_boxplot(outlier.size = 0.1, alpha = 0.7, size = 0.05, width = 0.5, outlier.colour = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.05, jitter.height = 0.0, dodge.width = 0.5), size = 0.07) +
+  scale_fill_manual(values = unlist(config$clrs$cell_type)) +
+  scale_color_manual(values = "firebrick4") +
+  stat_compare_means(label.y.npc = 0.9, method = "wilcox.test",
+    aes(label = paste0(..p.signif..)), size = 3, symnum.args = symnum.args,
+  ) +
+  ylab("% cells aneuploid") +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_y_continuous(trans = scales::pseudo_log_trans(sigma = 0.05, base = 10),  breaks = c(0, 1, 5, 0.1, 0.3), limits = c(0, 10)) +
+  labs(fill = "") +
+  theme(legend.position = "none")
+gbox
+```
+
+### Pairs of chromosomes
+
+```{r}
+dat$multiarm_frequencies$sample %>% unique %>% length
+
+dat$multiarm_frequencies[name == "1qgain_16qloss" & freq_event > 0] %>% pull(sample) %>% unique %>% length
+
+dat$multiarm_frequencies[name == "1qgain_10qloss" & freq_event > 0] %>% pull(sample) %>% unique %>% length
+
+x <- dat$multiarm_frequencies %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  filter(n_cells > config$cutoff) %>% 
+  arrange(desc(freq_event)) %>% 
+  group_by(name) %>% 
+  summarise(n_patients = sum(n_event > 1),
+            freq_event = 100 * mean(freq_event),
+            total_patients = n()/2) %>% 
+  ungroup() %>% 
+  arrange(desc(n_patients)) %>% 
+  head(20) %>% 
+  filter(n_patients > 4) %>% 
+  mutate(idx = 1:n()) %>% 
+  select(name, idx, n_patients, total_patients)
+
+gboxmulti <- dat$multiarm_frequencies %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  filter(n_cells > config$cutoff) %>% 
+  arrange(desc(freq_event)) %>% 
+  filter(name %in% x$name) %>% 
+  group_by(name) %>% 
+  mutate(x = mean(freq_event)) %>% 
+  ungroup() %>% 
+  mutate(name = str_replace(name, "_", "\n")) %>% 
+  mutate(freq_event = freq_event * 100) %>% 
+  ggplot(aes(x = fct_reorder(name, x, .desc = T), y = freq_event, fill = cell_type1)) +
+  geom_boxplot(outlier.size = 0.1, alpha = 0.7, size = 0.05, width = 0.5, outlier.colour = NA) +
+  #geom_point(data = mean_vals, aes(fill = NULL, col = "x"), shape = 4, size = 2.5, show.legend = FALSE) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.05, jitter.height = 0.0, dodge.width = 0.5), size = 0.07) +
+  scale_fill_manual(values = unlist(config$clrs$cell_type)) +
+  scale_color_manual(values = "firebrick4") +
+  stat_compare_means(label.y.npc = 0.9, method = "wilcox.test",
+    aes(label = paste0(..p.signif..)), size = 3, symnum.args = symnum.args,
+  ) +
+  ylab("% cells aneuploid") +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_y_continuous(trans = scales::pseudo_log_trans(sigma = 0.05, base = 10),  breaks = c(0, 0.1, 0.3, 1.0), limits = 
+c(0, 3)) +
+  labs(fill = "") +
+  theme(legend.position = "none")
+
+gboxmulti
+```
+
+```{r}
+dat$multiarm_frequencies %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  filter(n_cells > config$cutoff) %>% 
+  arrange(desc(freq_event)) %>% 
+  filter(name %in% x$name) %>% 
+  group_by(name) %>% 
+  mutate(x = mean(freq_event)) %>% 
+  ungroup() %>% 
+  mutate(name = str_replace(name, "_", "\n")) %>% 
+  mutate(freq_event = freq_event * 100) %>% 
+  group_by(name, cell_type1) %>% 
+  summarize(f = mean(freq_event))
+
+```
+
+### Chromosome pairs heatmap
+
+
+```{r}
+multi_arm <- dat$multiarm_frequencies %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  mutate(event1 = paste0(chrarm1, gain_loss1),
+         event2 = paste0(chrarm2, gain_loss2)) %>% 
+  filter(event1 %in% mean_vals$name & event2 %in% mean_vals$name) %>% 
+  filter(!(str_detect(event1, "X") | str_detect(event2, "X"))) %>% 
+  group_by(event1, event2) %>% 
+  summarise(freq_event = mean(freq_event),
+            n_cells = sum(n_cells),
+            n_event = sum(n_event)) %>% 
+  ungroup() %>% 
+  arrange(desc(freq_event))
+
+mean_vals <- x1 %>% 
+  filter(n_cells > config$cutoff) %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  #filter(cell_type == "Luminal") %>% 
+  #filter(name %in% names_to_keep) %>% 
+  group_by(name, chrarm, gain_loss) %>% 
+  summarise(freq_event_mean = 100 * mean(freq_event),
+            freq_event_median = 100 * median(freq_event)) %>% 
+  ungroup() %>% 
+  # pivot_wider(names_from = "gain_loss", values_from = c("freq_event_mean", "freq_event_median")) %>% 
+  mutate(x = freq_event_mean, freq_event = freq_event_mean) %>% 
+  filter(x > 0.1) %>% 
+  arrange(desc(x)) %>% 
+  select(name, x) %>% 
+  filter(!str_detect(name, "X"))
+
+mat <- matrix(nrow = 7, ncol = 7)
+row.names(mat) <-  mean_vals$name
+colnames(mat) <- mean_vals$name
+df <- data.frame()
+i <- 2
+for (e1 in mean_vals$name){
+  print("1")
+  print(e1)
+  if (i > 7){
+    next
+  }
+  for (e2 in mean_vals$name[i:7]){
+    print("2")
+    print(e2)
+    if (e1 == e2){
+      next
+    }
+    x <- filter(multi_arm, event1 == e1 & event2 == e2)
+    if (nrow(x) == 0){
+      x <- 0
+    } else{
+      x <- x$freq_event
+    }
+    df <- bind_rows(df, data.frame(event1 = e1, event2 = e2, freq_event = x * 100))
+    mat[e1, e2] <-  x * 100
+  }
+  i <- i + 1
+}
+
+mat_df <- reshape2::melt(as.matrix(mat), na.rm = TRUE) # Convert to long format, removing NAs
+x_levels_reversed <- levels(factor(mat_df$Var1))[length(levels(factor(mat_df$Var1))):1]
+y_levels_reversed <- levels(factor(mat_df$Var2))[length(levels(factor(mat_df$Var2))):1]
+
+
+hmap <- ggplot(mat_df, 
+       aes(x=Var1,
+           y=Var2, fill=value)) +
+  geom_tile(alpha = 0.5, colour = "black") +
+  scale_fill_gradient(low = "white", high = "red") + # Change colors as needed
+  theme_minimal(base_size = 7) +
+  #scale_x_discrete(limits = x_levels_reversed) +
+  scale_y_discrete(limits = y_levels_reversed) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # Rotate x labels if needed
+  scale_fill_distiller(palette = "RdBu") +
+  labs(x = "Event 1", y = "Event 2", fill = "Frequency") + # Customize labels +
+  theme(legend.key.width = unit(0.2, "cm"),
+        legend.key.height = unit(0.3, "cm"),
+        legend.position = c(0.8, 0.8)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  # theme(legend.key.width = unit(0.3, "cm"),
+  #     legend.key.height = unit(0.2, "cm"),
+  #     legend.position = "top") +
+  labs(fill = "")
+hmap
+```
+
+```{r}
+dat$multiarm_frequencies %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  filter(n_cells > config$cutoff) %>% 
+  arrange(desc(freq_event)) %>% 
+  group_by(name, cell_type1) %>% 
+  summarise(n_patients = sum(n_event > 0),
+            freq_event = 100 * mean(freq_event),
+            total_patients = n()) %>% 
+  ungroup() %>% 
+  arrange(desc(n_patients)) %>% 
+  pivot_wider(names_from = cell_type1, values_from = c(freq_event, n_patients, total_patients)) %>% 
+  arrange(desc(freq_event_Luminal)) %>% head(20)
+```
+
+
+
+### t.test multi chromosome
+
+```{r}
+library(broom)
+dat$multiarm_frequencies %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  filter(n_cells > config$cutoff) %>% 
+  arrange(desc(freq_event)) %>% 
+  mutate(freq_event = freq_event * 100) %>% 
+  group_by(name) %>%
+  do(tidy(t.test(100 * freq_event ~ cell_type1, data = .))) %>%
+  select(name, estimate,estimate1, estimate2, statistic, p.value, conf.low, conf.high) %>% 
+  arrange(p.value) %>% 
+  filter(!is.na(p.value)) %>% 
+  DT::datatable()
+
+```
+
+### Wilcox.test multi chromosome
+
+```{r}
+dat$multiarm_frequencies %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  filter(n_cells > config$cutoff) %>% 
+  arrange(desc(freq_event)) %>% 
+  mutate(freq_event = freq_event * 100) %>% 
+  group_by(name) %>%
+  do(tidy(wilcox.test(100 * freq_event ~ cell_type1, data = .))) %>%
+  select(name, statistic, p.value) %>% 
+  arrange(p.value) %>% 
+  filter(!is.na(p.value)) %>% 
+  DT::datatable()
+
+```
+
+
+## Frequency plots for Cancer and scWGS
+
+
+```{r}
+cancer <- fread(paste0(config$cancerdir, "nikzainal_bins.csv.gz")) %>% 
+  remove_centromeres()
+
+htert_cells <- fread(here("../zenododirectory/htert/cn.csv.gz")) %>% 
+  remove_centromeres()
+
+pl <- cndat %>%
+  .[, list(
+    gain = 100 * sum(state > ploidy, na.rm = TRUE) / .N,
+    loss = 100 * sum(state < ploidy, na.rm = TRUE) / .N,
+    n = .N
+  ), by = .(chr, start, end)] %>%
+  plottinglist_() 
+
+pl_htertcells <- htert_cells %>%
+  .[, list(
+    gain = 100 * sum(state > ploidy, na.rm = TRUE) / .N,
+    loss = 100 * sum(state < ploidy, na.rm = TRUE) / .N,
+    n = .N
+  ), by = .(chr, start, end)] %>%
+  plottinglist_() 
+
+pl_cancer <- cancer %>%
+  group_by(sample) %>% 
+  mutate(ploidy = signals:::Mode(state)) %>% 
+  ungroup() %>% 
+  as.data.table() %>%
+  .[, list(gain = 100 * sum(state > ploidy, na.rm = TRUE) / .N,
+         loss = 100 * sum(state < ploidy, na.rm = TRUE) / .N,
+         n = .N), by = .(chr, start, end)] %>%
+  plottinglist_()
+
+landscape_htertcells <- genplot(pl_htertcells,  
+                                alphaval = 0.6,
+                            gain_col = gain_col,
+                            loss_col = loss_col,
+                            breaks = 100 * c(0, 0.01), 
+                            limits = 100 * c(0, 0.018), 
+                            losslabels = c("0", "1.0"), 
+                            mytitle = NULL, returnlist = T)
+
+landscape_cancer <- genplot(pl_cancer, alphaval = 0.6,
+                            gain_col = gain_col,
+                            loss_col = loss_col,
+                            breaks = 100 * c(0, 0.5), 
+                            limits = 100 * c(0, 0.75), 
+                            losslabels = c("0", "50"), 
+                            mytitle = NULL, returnlist = T)
+
+landscape_basal <- genplot(plbasal, 
+                            gain_col = gain_col,
+                            loss_col = loss_col,
+                            breaks = 100 * c(0, 0.005, 0.01, 0.015), 
+                            limits = 100 * c(0, 0.015), 
+                            losslabels = c("0", "0.5", "1.0", "1.5"),
+                            mytitle = NULL, returnlist = T)
+
+landscape_luminal <- genplot(plluminal, 
+                            gain_col = gain_col,
+                            loss_col = loss_col,
+                            breaks = 100 * c(0, 0.005, 0.01, 0.015), 
+                            limits = 100 * c(0, 0.015), 
+                            losslabels = c("0", "0.5", "1.0", "1.5"),
+                            mytitle = NULL, returnlist = T)
+```
+
+## Final figure
+
+```{r}
+myplot <- cowplot::plot_grid(
+  landscape_htertcells$gain + theme(legend.position = "none",
+                                    axis.line = element_line(size = 0.18)) + removexaxis + ylab("hTERT\nCells"),
+  landscape_cancer$gain + theme(legend.position = "none",
+                                axis.line = element_line(size = 0.18)) + removexaxis + ylab("Breast\nCancers"), 
+  landscape_basal$gain + theme(legend.position = "none",
+                               axis.line = element_line(size = 0.18)) + removexaxis + ylab("Basal\nCells"),
+  landscape_luminal$gain + theme(legend.position = "none",
+                                 axis.line = element_line(size = 0.18))  + ylab("Luminal\nCells"),
+  landscape_luminal$loss + theme(legend.position = "none",
+                                 axis.line = element_line(size = 0.18)) + ylab("Luminal\nCells"),
+  landscape_basal$loss + theme(legend.position = "none",
+                               axis.line = element_line(size = 0.18)) + removexaxis + ylab("Basal\nCells"),
+  landscape_cancer$loss + theme(legend.position = "none",
+                                axis.line = element_line(size = 0.18))  + removexaxis + ylab("Breast\nCancers"), 
+  landscape_htertcells$loss + theme(legend.position = "none",
+                                    axis.line = element_line(size = 0.18))  + removexaxis + ylab("hTERT\nCells"), 
+  align = "v", 
+  axis = "lr", 
+  ncol = 1, 
+  rel_heights = c(1, 1,1,1.2, 1, 1, 1, 1))
+
+myplot <- cowplot::plot_grid(NULL, myplot, rel_widths = c(0.05, 1))
+
+gbottom <- cowplot::plot_grid(gbox, 
+                      hmap,
+                      gboxmulti, 
+                      ncol = 3,
+                      rel_widths = c(2,2,1), 
+                      labels = c("b", "c", "d"),
+                      label_size = 8)
+
+myplot_final <- cowplot::plot_grid(myplot, NULL, gbottom, ncol = 1, rel_heights = c(4,0.18, 1.5), 
+                          labels = c("a"), label_size = 8)
+
+myplot_final %>% 
+    cowplot::save_plot(here("Figures/Main/fig2.pdf"), .,base_width = 2 * 89 * 0.039, base_height = 6)
+```
+
+```{r, fig.width=7, fig.height=6}
+myplot_final
+```
+
+## Correlation with TCGA
+
+```{r, fig.height = 2.5}
+tcga <- fread(paste0(config$cancerdir, "tcga_bins.csv.gz")) %>%
+  mutate(chr = paste0(chr)) %>% 
+  remove_centromeres()
+tcga_meta <- fread(paste0(config$cancerdir, "tcga_metadata.csv.gz")) %>% 
+  filter(purity > 0.5) %>% 
+  select(sample, cancer_type)
+
+tcga <- inner_join(tcga, tcga_meta)
+
+cutoff <- 0.5
+pl_tcga <- tcga %>%
+  as.data.table() %>%
+  .[, list(Gain = sum(copy_old > cutoff, na.rm = TRUE) / .N,
+         Loss = sum(copy_old < -cutoff, na.rm = TRUE) / .N,
+         n = .N), by = .(chr, start, end, cancer_type)] %>%
+  plottinglist_()
+
+#library for cosine similarity
+library(lsa)
+
+cancer_type_cor <- inner_join(plluminal$CNbins, pl_tcga$CNbins, by = c("chr", "start", "end"),suffix - c(".scwgs", ".tcga")) %>% 
+  group_by(cancer_type) %>% 
+  summarise(cor_gain = cor(gain, Gain),
+            cor_loss = cor(loss, Loss),
+            corsp_gain = cor(gain, Gain, method = "spearman"),
+            corsp_loss = cor(loss, Loss, method = "spearman"),
+            cosine_gain = cosine(gain, Gain)[1],
+            cosine_loss = cosine(loss, Loss)[1]) %>% 
+  ungroup()
+
+htert_cor <-inner_join(plluminal$CNbins, pl_htertcells$CNbins %>% rename(Gain = gain , Loss = loss), 
+           by = c("chr", "start", "end"),suffix - c(".scwgs", ".tcga")) %>%   na.omit() %>% 
+  summarise(cor_gain = cor(gain, Gain),
+            cor_loss = cor(loss, Loss),
+            corsp_gain = cor(gain, Gain, method = "spearman"),
+            corsp_loss = cor(loss, Loss, method = "spearman"),
+            cosine_gain = cosine(gain, Gain)[1],
+            cosine_loss = cosine(loss, Loss)[1]) %>% 
+  ungroup() %>% 
+  mutate(cancer_type = "hTERT")
+
+cancer_type_cor <- bind_rows(cancer_type_cor, htert_cor) %>% 
+  filter(cancer_type != "hTERT") %>%
+  pivot_longer(-cancer_type) %>% 
+  arrange(name, desc(value)) %>% 
+  mutate(idx = 1:n()) %>% 
+  filter(!is.na(cancer_type))
+
+ggain <- cancer_type_cor %>% 
+  filter(name == "cosine_gain") %>% 
+  ggplot(aes(x = fct_reorder(cancer_type, idx, .desc = F), y = value)) +
+  geom_col(fill = config$clrs$gain_loss2$Gain) +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  ylab("Cosine similarity - gains") +
+  scale_y_continuous(limits = c(0, 1.0))
+ggain
+
+gloss <- cancer_type_cor %>% 
+  filter(name == "cosine_loss") %>% 
+  ggplot(aes(x = fct_reorder(cancer_type, idx, .desc = F), y = value)) +
+  geom_col(fill = config$clrs$gain_loss2$Loss) +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  ylab("Cosine similarity - losses") +
+  scale_y_continuous(limits = c(0, 1.0))
+gloss
+
+ggain_cor <- cancer_type_cor %>% 
+  filter(name == "cor_gain") %>% 
+  ggplot(aes(x = fct_reorder(cancer_type, idx, .desc = F), y = value)) +
+  geom_col(fill = config$clrs$gain_loss2$Gain) +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  ylab("Correlation - gains") +
+  scale_y_continuous(limits = c(NA, 1.0))
+ggain_cor
+
+gloss_cor <- cancer_type_cor %>% 
+  filter(name == "cor_loss") %>% 
+  ggplot(aes(x = fct_reorder(cancer_type, idx, .desc = F), y = value)) +
+  geom_col(fill = config$clrs$gain_loss2$Loss) +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  ylab("Correlation - losses") +
+  scale_y_continuous(limits = c(NA, 1.0))
+gloss_cor
+
+
+```
+
+## Bootstrapping
+
+```{r}
+bootstrap_tcga <- function(nsamples = 10){
+  tcga_ids <- tcga %>% distinct(cancer_type, sample)
+  cnbins_sample <- data.frame()
+  for (i in 1:nsamples){
+    print(i)
+    tcga_ids_sample <- tcga_ids %>% 
+      slice_sample(prop = 0.75, by = "cancer_type")
+    pl_tcga <- tcga %>%
+      filter(sample %in% tcga_ids_sample$sample) %>% 
+      as.data.table() %>%
+      .[, list(Gain = sum(copy_old > cutoff, na.rm = TRUE) / .N,
+             Loss = sum(copy_old < -cutoff, na.rm = TRUE) / .N,
+             n = .N), by = .(chr, start, end, cancer_type)] %>%
+      plottinglist_()
+    cnbins_sample <- bind_rows(cnbins_sample, pl_tcga$CNbins %>% mutate(sample_idx_tcga = i))
+  }
+  return(cnbins_sample)
+}
+
+bootstrap_dlp <- function(nsamples = 25){
+  cell_ids <- cndat %>%
+    filter(cell_type1 == "Luminal") %>% distinct(cell_id)
+  cnbins_sample <- data.frame()
+  for (i in 1:nsamples){
+    print(i)
+    cell_ids_sample <- cell_ids %>% 
+      slice_sample(prop = 0.75)
+    plluminal <- cndat %>%
+      filter(cell_id %in% cell_ids_sample$cell_id) %>% 
+      .[, list(
+        gain = 100 * sum(state > ploidy, na.rm = TRUE) / .N,
+        loss = 100 * sum(state < ploidy, na.rm = TRUE) / .N,
+        n = .N
+      ), by = .(chr, start, end)] %>%
+      plottinglist_()
+    cnbins_sample <- bind_rows(cnbins_sample, plluminal$CNbins %>% mutate(sample_idx_dlp = i))
+  }
+  return(cnbins_sample)
+}
+
+cnbins_tcga <- bootstrap_tcga(nsamples = 25)
+cnbins_dlp <- bootstrap_dlp(nsamples = 25)
+
+cancer_type_cor <- inner_join(cnbins_dlp, cnbins_tcga, 
+                              by = c("chr", "start", "end"),suffix - c(".scwgs", ".tcga")) %>% 
+  group_by(cancer_type, sample_idx_tcga, sample_idx_dlp) %>% 
+  summarise(cor_gain = cor(gain, Gain),
+            cor_loss = cor(loss, Loss),
+            corsp_gain = cor(gain, Gain, method = "spearman"),
+            corsp_loss = cor(loss, Loss, method = "spearman"),
+            cosine_gain = cosine(gain, Gain)[1],
+            cosine_loss = cosine(loss, Loss)[1]) %>% 
+  ungroup()
+
+cancer_type_cor <- cancer_type_cor %>%
+  pivot_longer(-cancer_type) %>% 
+  arrange(name, desc(value)) %>% 
+  mutate(idx = 1:n()) %>% 
+  filter(!is.na(cancer_type))
+
+
+theme_set(theme_cowplot(font_size = 7, line_size = 0.25))
+
+ggain_bs <- cancer_type_cor %>% 
+  filter(name == "cosine_gain") %>% 
+  group_by(cancer_type) %>% 
+  mutate(ord = mean(value)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x = fct_reorder(cancer_type, ord, .desc = T), y = value)) +
+  geom_violin(scale = "width",
+              fill = config$clrs$gain_loss2$Gain,
+              col = config$clrs$gain_loss2$Gain) +
+  geom_boxplot(col = "white", 
+               size = 0.2, width = 0.3, alpha = 0.5, outlier.colour = NA) +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  ylab("Cosine similarity - gains") +
+  scale_y_continuous(limits = c(0, 1.0))
+ggain_bs
+
+gloss_bs <- cancer_type_cor %>% 
+  filter(name == "cosine_loss") %>% 
+  group_by(cancer_type) %>% 
+  mutate(ord = mean(value)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x = fct_reorder(cancer_type, ord, .desc = T), y = value)) +
+  geom_violin(scale = "width",
+              fill = config$clrs$gain_loss2$Loss,
+              col = config$clrs$gain_loss2$Loss) +
+  geom_boxplot(col = "white", 
+               size = 0.2, width = 0.3, alpha = 0.5, outlier.colour = NA) +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  ylab("Cosine similarity - losses") +
+  scale_y_continuous(limits = c(0, 1.0))
+gloss_bs
+
+cowplot::plot_grid(cowplot::plot_grid(NULL, NULL, ncol = 1, labels = c("a", "b"),label_size = 8),
+          cowplot::plot_grid(ggain_bs, gloss_bs, ncol = 1),
+          ncol = 2, rel_widths = c(0.02, 1)) %>% 
+  cowplot::save_plot(.,
+            filename = here("Figures/Extended/EDF3.pdf"),
+            base_height = 3.4,
+            base_width = 2 * 89 * 0.039)
+```
+
+
+## session info
+
+```{r}
+sessionInfo()
+```

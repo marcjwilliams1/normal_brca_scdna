@@ -1,0 +1,180 @@
+---
+title: "Summary figures"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width=7.08, fig.height=6.69)
+```
+
+```{r}
+library(here)
+source(here("src/setup.R"))
+library(ggpubr)
+```
+
+## Read in data and summarize
+
+```{r}
+config$cutoff <- 300
+dat <- get_data(read_all = T)
+```
+
+## Kops
+
+```{r}
+kops <- fread(here("data/kops_data.csv")) %>% 
+  pivot_longer(partial_loss:TOTAL) %>% 
+  group_by(chr,  name) %>% 
+  summarise(value = mean(value))
+
+forplot <- dat$metrics[keep_cell == TRUE] %>% 
+  add_count(sample) %>% 
+  filter(n >= config$cutoff)
+
+cnarm <- dat$cnarm %>% 
+  filter(cell_id %in% forplot$cell_id) %>% 
+  left_join(dat$metrics %>% dplyr::select(cell_id, sample, cell_type1, genotype, organoid)) %>% 
+  mutate(type = case_when(
+    state > ploidy_compare ~ "gain",
+    state < ploidy_compare ~ "loss",
+    state == ploidy_compare ~ "Neutral"
+  )) %>% 
+  mutate(chrtype = paste0(chrarm, "_", type))
+
+ncells <- length(unique(cnarm$cell_id))
+
+cnarm_whole <- cnarm %>% 
+  mutate(arm = str_sub(chrarm, -1) ) %>% 
+  select(cell_id, chr, arm, type) %>% 
+  pivot_wider(names_from = arm, values_from = type) %>% 
+  mutate(p = ifelse(is.na(p), q, p)) %>% 
+  mutate(type = ifelse(p == q, p, "Neutral")) %>% 
+  group_by(chr, type) %>% 
+  summarize(n = n()) %>% 
+  ungroup() %>% 
+  filter(type != "Neutral") %>% 
+  mutate(f = 100 * n / ncells)
+
+cnarm_partial <- cnarm %>% 
+  group_by(chr, chrarm, type) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  mutate(f = 100 * n / ncells) %>% 
+  filter(type != "Neutral") %>% 
+  group_by(chr, type) %>% 
+  summarize(f = max(f))
+
+g1 <- inner_join(cnarm_whole, kops %>% dplyr::rename(type = name)) %>% 
+  ggplot(aes(x = f, y = value)) +
+  geom_point(size = 0.5) +
+  facet_wrap(~type, scales = "free") +
+  stat_cor(label.x.npc = 0.45, size = 2) +
+  xlab("Normal breast % (this study)") +
+  ylab("Klaasen. et al %") +
+  ggtitle("Whole chromosome")  +
+  theme(plot.title = element_text(face = "plain"))
+
+g2 <- inner_join(cnarm_partial, kops %>% filter(str_detect(name, "partial")) %>% mutate(name = str_remove(name, "partial_")) %>%  dplyr::rename(type = name)) %>% 
+  ggplot(aes(x = f, y = value)) +
+  geom_point(size = 0.5) +
+  facet_wrap(~type, scales = "free") +
+  stat_cor(label.x.npc = 0.45, size = 2) +
+  xlab("Normal breast % (this study)") +
+  ylab("Klaasen. et al %") +
+  ggtitle("Partial chromosome")  +
+  theme(plot.title = element_text(face = "plain"))
+
+
+g3 <- inner_join(cnarm_whole, kops %>% dplyr::rename(type = name)) %>% 
+  filter(!chr %in% c("1", "7", "10", "16", "22", "X")) %>% 
+  ggplot(aes(x = f, y = value)) +
+  geom_point(size = 0.5) +
+  facet_wrap(~type, scales = "free") +
+  stat_cor(label.x.npc = 0.45, size = 2) +
+  xlab("Normal breast % (this study)") +
+  ylab("Klaasen. et al %") +
+  ggtitle("Whole chromosome")  +
+  theme(plot.title = element_text(face = "plain"))
+
+g4 <- inner_join(cnarm_partial, kops %>% filter(str_detect(name, "partial")) %>% mutate(name = str_remove(name, "partial_")) %>%  dplyr::rename(type = name)) %>% 
+  filter(!chr %in% c("1", "7", "10", "16", "22", "X")) %>% 
+  ggplot(aes(x = f, y = value)) +
+  geom_point(size = 0.5) +
+  facet_wrap(~type, scales = "free") +
+  stat_cor(label.x.npc = 0.45, size = 2) +
+  xlab("Normal breast % (this study)") +
+  ylab("Klaasen. et al %") +
+  ggtitle("Partial chromosome")  +
+  theme(plot.title = element_text(face = "plain"))
+
+
+g1 <- cowplot::plot_grid(g1 + ggtitle("Whole chromosome (all chrs.)"), 
+                   g2 + ggtitle("Partial chromosome (all chrs.)"),
+                   g3 + ggtitle("Whole chromosome (non-recurrent chrs.)"), 
+                   g4 + ggtitle("Partial chromosome (non-recurrent chrs.)"), 
+                   labels = c("a", "b", "c", "d"), label_size = 8)
+```
+
+```{r,fig.height=4}
+g1
+```
+
+## Allele specific CN
+
+Check that BAFs are skewed in chromosome arms called as aneuploid. Included in EDF5a.
+
+```{r}
+hscn <- list.files(paste0(config$basedir, "zenododirectory/allele_specific_cn/"), 
+                   pattern = "csv.gz",
+                   full.names = TRUE) %>% 
+  lapply(., fread) %>% 
+  rbindlist()
+hscn_chrarm <- signals::per_chrarm_cn(hscn)
+
+dfidx <- data.frame(chr = c(paste0(1:22), "X"), idx = 1:23)
+
+g2 <- hscn_chrarm %>% 
+  filter(proportion > 0.9) %>% 
+  filter(chrarm %in% c("1q", "7q", "10q", "16q",  "22q", "Xq")) %>% 
+  filter(state_AS_phased %in% c("0|1", "1|0", "1|1", "2|1", "1|2")) %>% 
+  mutate(to_keep = case_when(
+    chrarm == "1q" & state %in% c(2,3) ~ TRUE,
+    chrarm %in% c("7q", "10q", "16q",  "22q", "Xq") & state %in% c(1,2) ~ TRUE,
+    TRUE ~ FALSE
+  )) %>% 
+  filter(to_keep == TRUE) %>% 
+  mutate(chrarm = factor(chrarm, levels = c("1q", "7q", "10q", "16q",  "22q", "Xq"))) %>% 
+  ggplot(aes(x = state_AS_phased, y = BAF)) +
+  geom_violin(scale = "width", drop = FALSE, aes(fill = paste0(state), col = paste0(state))) +
+  geom_boxplot(outlier.colour = NA, width = 0.2, alpha = 0.0, size = 0.25) +
+  scale_fill_manual(values = as.vector(scCNstate_colors[c("1", "2", "3")])) +
+  scale_color_manual(values = as.vector(scCNstate_colors[c("1", "2", "3")])) +
+  ylim(c(0,1)) +
+  facet_wrap(~chrarm, , scales = "free_x", ncol = 6) +
+  panel_border() +
+  xlab("Allele specific state") +
+  ylab("BAF per cell per chromosome arm") +
+  labs(fill = "Total copy number state") +
+  theme(legend.position = "bottom") +
+  guides(col = "none")
+
+```
+
+```{r, fig.height=2.5}
+g2
+
+```
+
+```{r}
+cowplot::plot_grid(g1, g2, ncol = 1, rel_heights = c(0.61, 0.307)) %>% 
+  cowplot::save_plot(here("Figures/Extended/EDF4.pdf"), ., 
+            base_width = 2 * 89 * 0.039, base_height = 6.5)
+
+```
+
+
+
+

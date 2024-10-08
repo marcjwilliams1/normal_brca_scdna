@@ -1,0 +1,331 @@
+---
+title: "Chromosome frequency plots"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width=7.08, fig.height=6.69)
+```
+
+```{r}
+library(here)
+library(ggpubr)
+source(here("src/setup.R"))
+theme_set(theme_cowplot(font_size = 8))
+```
+
+```{r}
+dat <- get_data(read_all = F)
+
+cell_types_sum <- dat$arm_frequencies %>% 
+  filter(n_cells > config$cutoff) %>% #at least x cells
+  group_by(cell_type1, name, chr, chrarm, gain_loss) %>% #create groups
+  summarise(n_patients_with_event = sum(n_event > 1),
+            total_patients = length(unique(sample)),
+            n_event = sum(n_event), 
+            n_cells = sum(n_cells)) %>% 
+  ungroup() %>% #remove groupings
+  mutate(freq_event = n_event / n_cells) %>% 
+  mutate(freq_patient = n_patients_with_event / total_patients) %>% 
+  arrange(desc(freq_event))
+
+x1 <- cell_types_sum %>% 
+  select(gain_loss, cell_type1, chrarm, chr, freq_event, freq_patient, n_patients_with_event) %>% 
+  mutate(method = "DLP", x1 = 1) %>% 
+  filter(cell_type1 %in% c("Basal", "Luminal"))
+```
+
+## Chr arms - cell types
+
+```{r}
+singlearm_freq_cohort1 <- dat$arm_frequencies
+
+symnum.args <- list(cutpoints = c( 0.00, 0.001, 0.01, 0.05, 1), symbols = c("***", "**", "*", "ns"))
+x1 <- singlearm_freq_cohort1 %>% 
+  filter(n_cells > config$cutoff)
+
+x1 <- dplyr::rename(x1, cell_type = cell_type1)
+
+x1 %>% 
+  filter(cell_type %in% c("Basal", "Luminal")) %>% 
+  filter(gain_loss == "gain") %>% 
+  filter(chrarm == "1q") %>% 
+  wilcox.test(freq_event ~ cell_type, data = .)
+
+x1 %>% 
+  filter(cell_type %in% c("Basal", "Luminal")) %>% 
+  filter(gain_loss == "gain") %>% 
+  lm(freq_event ~ cell_type + chrarm, data = .) %>% 
+  summary()
+
+x1 %>% 
+  filter(cell_type %in% c("Basal", "Luminal")) %>% 
+  filter(gain_loss == "loss") %>% 
+  lm(freq_event ~ cell_type + chrarm, data = .) %>% 
+  summary()
+
+x1 %>% 
+  filter(cell_type %in% c("Basal", "Luminal")) %>% 
+  filter(gain_loss == "gain") %>% 
+  lm(freq_event ~ cell_type * chrarm, data = .) %>% 
+  summary()
+
+x1 %>% 
+  filter(cell_type %in% c("Basal", "Luminal")) %>% 
+  filter(gain_loss == "loss") %>% 
+  lm(freq_event ~ cell_type * chrarm, data = .) %>% 
+  summary()
+
+```
+
+### Table per cell type
+
+```{r}
+
+mean_vals <- x1 %>% 
+  filter(cell_type %in% c("Basal", "Luminal")) %>% 
+  group_by(chrarm, gain_loss, cell_type) %>% 
+  summarise(freq_event_mean = 100 * mean(freq_event),
+            freq_event_median = 100 * median(freq_event)) %>% 
+  ungroup() %>% 
+  pivot_wider(names_from = "gain_loss", values_from = c("freq_event_mean", "freq_event_median"))
+
+mean_vals %>% 
+  DT::datatable()
+```
+
+### T.tests
+
+```{r}
+library(broom)
+x1 %>%
+  filter(cell_type %in% c("Basal", "Luminal")) %>% 
+  group_by(chrarm, gain_loss) %>%
+  do(tidy(t.test(100 * freq_event ~ cell_type, data = .))) %>%
+  select(chrarm, gain_loss, estimate, statistic, p.value, conf.low, conf.high) %>% 
+  DT::datatable()
+```
+
+
+### Wilcox.test
+
+```{r}
+x1 %>%
+  filter(cell_type %in% c("Basal", "Luminal")) %>% 
+  group_by(chrarm, gain_loss) %>%
+  do(tidy(wilcox.test(100 * freq_event ~ cell_type, data = .))) %>%
+  select(chrarm, gain_loss, statistic, p.value) %>% 
+  DT::datatable()
+
+```
+
+### Combined plots
+
+```{r, fig.width=12}
+symnum.args <- list(cutpoints = c( 0.00, 0.001, 0.01, 0.05, 1), symbols = c("***", "**", "*", ""))
+
+mean_vals <- x1 %>% 
+  filter(cell_type %in% c("Basal", "Luminal")) %>% 
+  group_by(chrarm, gain_loss) %>% 
+  summarise(freq_event = mean(freq_event)) %>% 
+  ungroup() %>% 
+  mutate(x = freq_event)
+
+
+g_celltype_gain_bar <- x1 %>% 
+  filter(cell_type %in% c("Basal", "Luminal")) %>% 
+  filter(gain_loss == "gain") %>% 
+  group_by(name) %>% 
+  mutate(x = mean(freq_event)) %>% 
+  ungroup() %>% 
+  group_by(chrarm, name, cell_type, x) %>% 
+  summarize(n_patient = sum(n_event > 1) / n()) %>% 
+  ungroup() %>% 
+  ggplot(aes(x = fct_reorder(chrarm, x, .desc = T), y =  100 * n_patient, fill = cell_type)) +
+  geom_col(position = position_dodge(1.0)) +
+  #geom_point(data = mean_vals %>% filter(gain_loss == "gain"), aes(fill = NULL, col = "x"), shape = 4, size = 2.5, show.legend = FALSE) +
+  scale_fill_manual(values = unlist(config$clrs$cell_type)) +
+  ylab("% donors\nwith gains") +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  labs(fill = "") 
+
+g_celltype_gain <- x1 %>% 
+  filter(cell_type %in% c("Basal", "Luminal")) %>% 
+  filter(gain_loss == "gain") %>% 
+  group_by(name) %>% 
+  mutate(x = mean(freq_event)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x = fct_reorder(chrarm, x, .desc = T), y = freq_event * 100, fill = cell_type)) +
+  geom_boxplot(outlier.size = 0.1, alpha = 0.7, size = 0.3) +
+  #geom_point(data = mean_vals %>% filter(gain_loss == "gain"), aes(fill = NULL, col = "x"), shape = 4, size = 2.5, show.legend = FALSE) +
+  scale_fill_manual(values = unlist(config$clrs$cell_type)) +
+  scale_color_manual(values = "firebrick4") +
+  stat_compare_means(label.y.npc = 0.8, method = "wilcox.test",
+    aes(label = paste0(..p.signif..)), size = 3, symnum.args = symnum.args,
+  ) +
+  ylab("% cells\nwith gains") +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_y_continuous(trans = scales::pseudo_log_trans(sigma = 0.05, base = 10),  breaks = c(0, 1,3, 0.1, 0.3), limits = c(0, 10)) +
+  labs(fill = "") 
+
+cowplot::plot_grid(g_celltype_gain_bar,
+          g_celltype_gain,
+          ncol = 1, axis = "lr", align = "v")
+
+g_celltype_loss_bar <- x1 %>% 
+  filter(cell_type %in% c("Basal", "Luminal")) %>% 
+  filter(gain_loss == "loss") %>% 
+  group_by(name) %>% 
+  mutate(x = mean(freq_event)) %>% 
+  ungroup() %>% 
+  group_by(name, cell_type) %>% 
+  mutate(n_patient = sum(n_event > 1) / n()) %>% 
+  ungroup() %>% 
+  ggplot(aes(x = fct_reorder(chrarm, x, .desc = T), y =  100 * n_patient, fill = cell_type)) +
+  geom_col(position = position_dodge(1)) +
+  #geom_point(data = mean_vals %>% filter(gain_loss == "gain"), aes(fill = NULL, col = "x"), shape = 4, size = 2.5, show.legend = FALSE) +
+  scale_fill_manual(values = unlist(config$clrs$cell_type)) +
+  ylab("% donors\nwith losses") +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  labs(fill = "") 
+
+g_celltype_loss <- x1 %>% 
+  filter(cell_type %in% c("Basal", "Luminal")) %>% 
+  filter(gain_loss == "loss") %>% 
+  group_by(name) %>% 
+  mutate(x = mean(freq_event)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x = fct_reorder(chrarm, x, .desc = T), y = freq_event * 100, fill = cell_type)) +
+  geom_boxplot(outlier.size = 0.1, alpha = 0.7, size = 0.3) +
+  #geom_point(data = mean_vals %>% filter(gain_loss == "loss"), aes(fill = NULL, col = "x"), shape = 4, size = 2.5, show.legend = FALSE) +
+  scale_fill_manual(values = unlist(config$clrs$cell_type)) +
+  scale_color_manual(values = "firebrick4") +
+  stat_compare_means(label.y.npc = 0.8,method = "wilcox.test",
+    aes(label = paste0(..p.signif..)), size = 3, symnum.args = symnum.args,
+  ) +
+  ylab("% cells\nwith losses") +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_y_continuous(trans = scales::pseudo_log_trans(sigma = 0.05, base = 10),  breaks = c(0, 1,3, 0.1, 0.3), limits = c(0, 6)) +
+  labs(fill = "") 
+
+cowplot::plot_grid(g_celltype_gain, g_celltype_loss, ncol = 1)  
+```
+
+```{r}
+
+cowplot::plot_grid(g_celltype_gain_bar,
+          g_celltype_gain,
+          ncol = 1, axis = "lr", align = "v")
+
+cowplot::plot_grid(g_celltype_gain_bar + theme(legend.position = "none") ,
+                     g_celltype_gain + theme(legend.position = "none"), 
+                     ncol = 1, 
+                     align = "l", axis = "v")
+
+gmiddle <- cowplot::plot_grid(g_celltype_gain_bar + theme(legend.position = c(0.9, 0.74)) + removexaxis +
+                       scale_y_continuous(limits = c(0, 100), breaks = c(0, 50, 100)),
+                     g_celltype_gain + theme(legend.position = "none"), 
+                     g_celltype_loss_bar + theme(legend.position = "none") + removexaxis  +
+                       scale_y_continuous(limits = c(0, 100), breaks = c(0, 50, 100)),
+                     g_celltype_loss + theme(legend.position = "none"), 
+                     ncol = 1, 
+                     align = "lr", axis = "v",
+                     labels = c("a", "", "b"), label_size = 8,
+                     rel_heights = c(0.4, 1, 0.4,1))
+
+gmiddle
+
+cowplot::plot_grid(gmiddle,
+          ncol = 1,
+          rel_heights = c(1)) %>% 
+  cowplot::save_plot(here("Figures/Extended/EDF2.pdf"), .,base_width = 2 * 89 * 0.039, base_height = 4)
+```
+
+```{r, fig.height = 4}
+cowplot::plot_grid(gmiddle,
+          ncol = 1,
+          rel_heights = c(1)) 
+```
+
+### GGpaired plots
+
+```{r}
+library(ggpubr)
+g1 <- x1 %>%
+  filter(cell_type %in% c("Basal", "Luminal")) %>%
+  filter(gain_loss == "gain") %>%
+  filter(chrarm == "1q") %>%
+  mutate(freq_event = 100 * freq_event) %>% 
+  add_count(sample) %>% 
+  filter(n == 2) %>% 
+  ggpubr::ggpaired(data = .,
+              x = "cell_type",
+              y = "freq_event",
+              title = "1q",
+              xlab = "Cell Type",
+              ylab = "% Aneuploid") +
+  theme_cowplot(font_size = 7)  +
+  ggpubr::stat_compare_means(paired = T, size = 2,
+                             comparisons = list(c("Luminal", "Basal")))
+
+g2 <- x1 %>%
+  filter(cell_type %in% c("Basal", "Luminal")) %>%
+  filter(gain_loss == "loss") %>%
+  filter(chrarm == "16q") %>%
+  mutate(freq_event = 100 * freq_event) %>% 
+  add_count(sample) %>% 
+  filter(n == 2) %>% 
+  ggpaired(data = .,
+              x = "cell_type",
+              y = "freq_event",
+              title = "16q",
+              xlab = "Cell Type",
+              ylab = "% Aneuploid") +
+  theme_cowplot(font_size = 7)  +
+  ggpubr::stat_compare_means(paired = T, size = 2,
+                             comparisons = list(c("Luminal", "Basal")))
+
+g3 <- x1 %>%
+  filter(cell_type %in% c("Basal", "Luminal")) %>%
+  filter(gain_loss == "loss") %>%
+  filter(chrarm == "22q") %>%
+  mutate(freq_event = 100 * freq_event) %>% 
+  add_count(sample) %>% 
+  filter(n == 2) %>% 
+  ggpaired(data = .,
+              x = "cell_type",
+              y = "freq_event",
+              title = "22q",
+              xlab = "Cell Type",
+              ylab = "% Aneuploid") +
+  theme_cowplot(font_size = 7)  +
+  ggpubr::stat_compare_means(paired = T, size = 2,
+                             comparisons = list(c("Luminal", "Basal")))
+
+g4 <- x1 %>%
+  filter(cell_type %in% c("Basal", "Luminal")) %>%
+  filter(gain_loss == "loss") %>%
+  filter(chrarm == "7q") %>%
+  mutate(freq_event = 100 * freq_event) %>% 
+  add_count(sample) %>% 
+  filter(n == 2) %>% 
+  ggpaired(data = .,
+              x = "cell_type",
+              y = "freq_event",
+              title = "7q",
+              xlab = "Cell Type",
+              ylab = "% Aneuploid") +
+  theme_cowplot(font_size = 7) +
+  ggpubr::stat_compare_means(paired = T, size = 2,
+                             comparisons = list(c("Luminal", "Basal")))
+
+cowplot::plot_grid(g1, g2, g3, g4)
+```
+
+

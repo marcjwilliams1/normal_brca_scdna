@@ -1,0 +1,376 @@
+---
+title: "Clinical associations"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width=7.08, fig.height=6.69)
+```
+
+```{r}
+library(here)
+library(ggpubr)
+source(here("src/setup.R"))
+```
+
+## Read in data and summarize
+
+```{r}
+dat <- get_data(read_all = F)
+
+forplot <- dat$metrics[keep_cell == TRUE] %>% 
+  filter(cell_type1 != "Bulk") %>% 
+  add_count(sample) %>% 
+  filter(n_aneuploid_arm < 5) %>% 
+  filter(n >= config$cutoff)
+```
+
+```{r}
+forplot %>% 
+  distinct(sample, genotype, n) %>% 
+  knitr::kable()
+```
+
+## Combine data
+
+```{r}
+cnarm <- dat$cnarm %>% 
+  filter(cell_id %in% forplot$cell_id) %>% 
+  left_join(dat$metrics %>% select(cell_id, sample, cell_type1, genotype, organoid)) %>% 
+  mutate(type = case_when(
+    state > ploidy_compare ~ "Gain",
+    state < ploidy_compare ~ "Loss",
+    state == ploidy_compare ~ "Neutral"
+  )) %>% 
+  mutate(chrtype = paste0(chrarm, "_", type))
+
+df1 <- cnarm %>% 
+  group_by(sample, cell_type1, genotype) %>% 
+  summarize(n_aneuploid = length(unique(cell_id[!str_detect(chrtype, "Neutral")])),
+            n_diff_aneuploid = length(unique(chrtype[!str_detect(chrtype, "Neutral")])),
+            n_chr1 = sum(chrtype == "1q_Gain"),
+            n_chr16 = sum(chrtype == "16q_Loss"),
+            n_chr10 = sum(chrtype == "10q_Loss"),
+            n_chr22 = sum(chrtype == "22q_Loss"),
+            n_chr7 = sum(chrtype == "7q_Loss"),
+            n_chrX = sum(chrtype == "Xq_Loss"),
+            n_other = length(unique(cell_id[!str_detect(chrtype, "1q_Gain|16q_Loss|10q_Loss|22q_Loss|7q_Loss|Neutral|Xq_Loss")])),
+            n_cells = length(unique(cell_id))) %>% 
+  ungroup() %>% 
+  mutate(n_common = n_chr1 + n_chr16 + n_chr10 + n_chr22 + n_chr7) %>% 
+  mutate(f_aneuploid = 100 * n_aneuploid / n_cells,
+         f_chr1 = 100 * n_chr1 / n_cells,
+         f_chr7 = 100 * n_chr7 / n_cells,
+         f_chr16 = 100 * n_chr16 / n_cells,
+         f_chr10 = 100 * n_chr10 / n_cells,
+         f_chr22 = 100 * n_chr22 / n_cells,
+         f_chrX = 100 * n_chrX / n_cells,
+         f_common = 100 * n_common / n_cells,
+         f_other = 100 * n_other / n_cells)
+
+df2 <- cnarm %>% 
+  group_by(sample, genotype) %>% 
+  summarize(n_aneuploid = length(unique(cell_id[!str_detect(chrtype, "Neutral")])),
+            n_diff_aneuploid = length(unique(chrtype[!str_detect(chrtype, "Neutral")])),
+            n_chr1 = sum(chrtype == "1q_Gain"),
+            n_chr16 = sum(chrtype == "16q_Loss"),
+            n_chr10 = sum(chrtype == "10q_Loss"),
+            n_chr22 = sum(chrtype == "22q_Loss"),
+            n_chr7 = sum(chrtype == "7q_Loss"),
+            n_chrX = sum(chrtype == "Xq_Loss"),
+            n_other = length(unique(cell_id[!str_detect(chrtype, "1q_Gain|16q_Loss|10q_Loss|22q_Loss|7q_Loss|Neutral|Xq_Loss")])),
+            n_cells = length(unique(cell_id))) %>% 
+  ungroup() %>% 
+  mutate(n_common = n_chr1 + n_chr16 + n_chr10 + n_chr22 + n_chr7) %>% 
+  mutate(f_aneuploid = 100 * n_aneuploid / n_cells,
+         f_chr1 = 100 * n_chr1 / n_cells,
+         f_chr7 = 100 * n_chr7 / n_cells,
+         f_chr16 = 100 * n_chr16 / n_cells,
+         f_chr10 = 100 * n_chr10 / n_cells,
+         f_chr22 = 100 * n_chr22 / n_cells,
+         f_chrX = 100 * n_chrX / n_cells,
+         f_common = 100 * n_common / n_cells,
+         f_other = 100 * n_other / n_cells) %>% 
+  mutate(cell_type1 = "All cells")
+
+## extreme aneuploidy
+df3 <- dat$metrics[keep_cell == TRUE] %>% 
+  filter(organoid == "FALSE") %>% 
+  filter(genotype != "ATM") %>% 
+  filter(cell_type1 != "Bulk") %>% 
+  add_count(sample) %>% 
+  filter(n >= config$cutoff) %>% 
+  group_by(sample) %>% 
+  summarize(n_extreme = sum(n_aneuploid_arm > 6)) %>% 
+  ungroup() %>% 
+  mutate(cell_type1 = "All cells")
+
+df4 <- dat$metrics[keep_cell == TRUE] %>% 
+  filter(organoid == "FALSE") %>% 
+  filter(genotype != "ATM") %>% 
+  filter(cell_type1 != "Bulk") %>% 
+  add_count(sample) %>% 
+  filter(n >= config$cutoff) %>% 
+  group_by(sample, cell_type1) %>% 
+  summarize(n_extreme = sum(n_aneuploid_arm > 6)) %>% 
+  ungroup()
+
+df <- bind_rows(df1, df2) %>% 
+  left_join(bind_rows(df3, df4)) %>% 
+  mutate(f_extreme = 100 * n_extreme / n_cells) %>% 
+  arrange(sample)
+
+df <- df  %>% 
+  left_join(dat$clinical %>% rename(sample = patient_id)) %>% 
+  filter(n_cells >= config$cutoff) %>% 
+  rename(cell_type = cell_type1) %>% 
+  distinct()
+
+df <- df %>% 
+  mutate(hyperplasia = ifelse(sample %in% c("B2-16", "WT-7","WT-6752", "B2-21","B2-23"), "Y", "N"))
+
+df <- df %>% 
+  rowwise() %>% 
+  mutate(entropy = entropy::entropy(c(f_chr1, f_chr10, f_chr16, f_chr22, f_chrX, f_other))) %>% 
+  ungroup()
+```
+
+## Searcheable table
+
+```{r}
+DT::datatable(df)
+```
+
+## Aneuploid and clinical covariates
+
+
+```{r}
+
+cov_plot <- function(df, 
+                     mygroup, 
+                     y_axis, 
+                     filter_basal = T, 
+                     mymethod = "t.test",
+                     x_axis_lab = NULL,
+                     fillcol = "white"){
+  
+  symnum.args <- list(cutpoints = c( 0.00, 0.001, 0.01, 0.05, 1),
+                      symbols = c("***", "**", "*", "ns"))
+  
+  all_combinations <- unique(df[[mygroup]])
+  all_combinations <- all_combinations[!is.na(all_combinations)]
+  all_combinations <- all_combinations[all_combinations != "All cells"]
+  
+  my_comparisons <- combn(all_combinations, 2, simplify = FALSE)
+  
+  if (is.null(x_axis_lab)){
+    x_axis_lab <- mygroup
+  }
+  
+  # Ensure that mygroup and y_axis are interpreted as symbols
+  mygroup <- sym(mygroup)
+  y_axis <- sym(y_axis)
+
+
+  if (filter_basal == TRUE){
+    df %>% 
+      filter(cell_type == "Luminal") %>% 
+      mutate(group = !!mygroup) %>% 
+      filter(!is.na(group)) %>% 
+      ggplot(aes(x = group, y = !!y_axis)) +
+      geom_boxplot(size = 0.2, width = 0.5, 
+                   outlier.colour = NA, aes(fill = "x")) +
+      geom_jitter(width = 0.1, height = 0.0, size = 0.2) +
+      stat_compare_means(label.y.npc = 0.85, 
+                         size = 2, 
+                         #symnum.args = symnum.args,
+                         comparisons = my_comparisons,
+                         method = mymethod) +
+      xlab(x_axis_lab) +
+      ylab("% cells aneuploid") +
+      scale_fill_manual(values = fillcol) +
+      theme(legend.position = "none")
+  } else{
+    df %>% 
+      filter(cell_type != "All cells") %>% 
+      mutate(group = !!mygroup) %>% 
+      filter(!is.na(group)) %>% 
+      ggplot(aes(x = group, y = !!y_axis)) +
+      geom_boxplot(size = 0.2, width = 0.5, 
+                   outlier.colour = NA, aes(fill = "x")) +
+      geom_jitter(width = 0.1, height = 0.0, size = 0.2) +
+      stat_compare_means(label.y.npc = 0.85, 
+                         size = 2, 
+                         #symnum.args = symnum.args,
+                         comparisons = my_comparisons,
+                         method = mymethod) +
+      xlab(x_axis_lab) +
+      ylab("% cells aneuploid") +
+      scale_fill_manual(values = fillcol) +
+      theme(legend.position = "none")
+  }
+}
+```
+
+
+## Multi-level regression
+
+```{r}
+library(lme4)
+library(lmerTest)
+
+df_reg <- filter(df, cell_type != "All cells")
+df_reg$genotype <- as.factor(df_reg$genotype)
+df_reg$cell_type <- as.factor(df_reg$cell_type)
+
+#reguler linear regression
+model <- lm(f_aneuploid ~ age + genotype + cell_type, data=df_reg)
+summary(model) %>% print()
+
+#multi-level regression
+model <- lmer(f_aneuploid ~ age + cell_type + genotype + (1 | sample), data = df_reg)
+summary(model)
+library(sjPlot)
+gforest <- plot_model(model, sort.est = T, show.values = T, show.p = T, title = "", color = c("black", "black"), value.offset = .4, value.size = 2.3, order.terms = c(3,2,4,5)-1)
+```
+
+## Final plots
+
+```{r, fig.height=3}
+my_comparisons <- list(c("BRCA1", "WT"), c("BRCA2", "WT"))
+symnum.args <- list(cutpoints = c( 0.00, 0.001, 0.01, 0.05, 1), symbols = c("***", "**", "*", "ns"))
+
+#df <- fread(here("extradata/intermediate/clinical_covariates.csv"))
+
+plot_geno <- df %>% 
+  filter(cell_type == "All cells") %>% 
+  ggplot(aes(x = genotype, y = f_aneuploid, fill = genotype)) +
+  geom_boxplot(width = 0.5, outlier.colour = NA, size = 0.2) +
+  stat_compare_means(#aes(label = paste0(..p.signif..)), 
+                     size = 2.2,  label.y.npc = 0.9,
+                     method = "t.test",
+                     #symnum.args = symnum.args, 
+                     label.x = 1, 
+                     comparisons = my_comparisons, 
+                     size = 3) +
+  geom_jitter(width = 0.1, height = 0.0, size = 0.1) +
+  scale_x_discrete(guide = guide_axis(angle = 0)) +
+  #ylab("") +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = unlist(config$clrs$genotype)) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  xlab("") +
+  ylab("% cells aneuploid") +
+  scale_y_continuous(limits = c(0, 8), breaks = c(0,2,4,6, 8))
+plot_geno
+
+plot_cell_type <- df %>% 
+  filter(cell_type != "All cells") %>% 
+  ggplot(aes(x = cell_type, y = f_aneuploid, fill = cell_type)) +
+  geom_boxplot(width = 0.5, outlier.colour = NA, size = 0.2) +
+  stat_compare_means(#aes(label = paste0(..p.signif..)), 
+                     size = 2.2,  label.y.npc = 0.9,
+                     method = "t.test",
+                     #symnum.args = symnum.args, 
+                     label.x = 1, 
+                     comparisons = list(c("Luminal", "Basal")), 
+                     size = 3) +
+  geom_jitter(width = 0.1, height = 0.0, size = 0.1) +
+  scale_x_discrete(guide = guide_axis(angle = 0)) +
+  #ylab("") +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = unlist(config$clrs$cell_type)) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  xlab("") +
+  ylab("% cells aneuploid") +
+  scale_y_continuous(limits = c(0, 8), breaks = c(0,2,4,6, 8))
+plot_cell_type
+
+plot_age <- df %>% 
+  filter(cell_type == "Luminal") %>% 
+  filter(n_cells > config$cutoff) %>% 
+  mutate(sample = str_remove(sample, "B1-|B2-|WT-")) %>% 
+  ggplot(aes(x = age, y = f_aneuploid)) +
+  geom_point(size = 0.4) +
+  geom_smooth(method = "lm", col = "firebrick", lty = 2, se = F) +
+  facet_wrap(~genotype, scales = "free_x") +
+  ggrepel::geom_text_repel(aes(label = sample), size = 2) +
+  ggpubr::stat_cor(size = 2.0, label.x.npc = 0.82,label.sep='\n') +
+  ylab("% cells aneuploid") +
+  panel_border() +
+  xlab("Age") +
+  theme(strip.background = element_rect(fill="white"))
+plot_age
+
+plot_cancer <- cov_plot(df, "current_past_cancer", "f_aneuploid", x_axis_lab = "Cancer history", fillcol = "grey70")
+
+plot_chemo <- cov_plot(df %>% filter(chemo != "N/A"), "chemo", "f_aneuploid", x_axis_lab = "Chemo history", fillcol = "grey70")
+
+plot_parity <- cov_plot(df, "parity_group", "f_aneuploid", x_axis_lab = "Parity", fillcol = "grey70")
+
+plot_meno <- cov_plot(df %>% filter(menopause_group != ""), "menopause_group", "f_aneuploid", x_axis_lab = "Menopause", fillcol = "grey70") + scale_x_discrete(guide = guide_axis(angle = 45))
+
+(gtop <- cowplot::plot_grid(#plot_geno, 
+                  #plot_cell_type, 
+                  plot_age,
+                  rel_widths = c(1,1,2),
+                  align = "hv",
+                  axis = "lrtb",
+                  ncol = 1,
+                  labels = letters[1],
+                  label_size = 8))
+
+(gmiddle <- cowplot::plot_grid(plot_cancer,
+                     plot_chemo,
+                     plot_parity,
+                     plot_meno,
+                     ncol = 4,
+                     align = "hv",
+                     axis = "lrtb",
+                     labels = letters[2:5],
+                     label_size = 8))
+
+gbottom <- cowplot::plot_grid(gforest, NULL, 
+                              ncol = 2,
+                              rel_widths = c(0.7, 1), labels = letters[6], label_size = 8)
+
+cowplot::plot_grid(gtop, gmiddle, gbottom, ncol = 1, rel_heights = c(1,1.3,0.8)) %>% 
+  cowplot::save_plot(here("Figures/Extended/EDF1.pdf"), .,
+            base_width = 2 * 89 * 0.039, base_height = 6)
+```
+
+```{r, fig.width = 6}
+cowplot::plot_grid(gtop, gmiddle, gbottom, ncol = 1, rel_heights = c(1,1.3,0.8))
+```
+
+```{r}
+df %>% 
+  filter(cell_type != "All cells") %>% 
+  group_by(cell_type) %>% 
+  summarize(f_aneuploid_mean = mean(f_aneuploid),
+            f_aneuploid_median = median(f_aneuploid),
+            f_common_mean = mean(f_common),
+            f_common_median = median(f_common)) %>% 
+  knitr::kable()
+
+
+df %>% 
+  filter(cell_type != "All cells") %>% 
+  lm(f_aneuploid ~ cell_type, data = .) %>% 
+  summary()
+
+df %>% 
+  filter(cell_type != "All cells") %>% 
+  t.test(f_aneuploid ~ cell_type, data = .)
+
+for_paired <- df %>% 
+  filter(cell_type != "All cells") %>% 
+  select(sample, cell_type, f_aneuploid) %>% 
+  pivot_wider(names_from = cell_type, values_from = f_aneuploid) %>% 
+  na.omit()
+
+t.test(for_paired$Basal, for_paired$Luminal, paired = T)
+```
+

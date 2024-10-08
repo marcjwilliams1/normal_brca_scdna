@@ -1,0 +1,437 @@
+---
+title: "Figure 4: Allele specific analysis"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width=7.08, fig.height=6.69)
+```
+
+```{r}
+library(grid)
+library(ComplexHeatmap)
+library(here)
+library(ggpubr)
+source(here("src/setup.R"))
+source(here("src/landscape_plots.R"))
+theme_set(theme_cowplot(font_size = 8, line_size = 0.25))
+```
+
+## Read in data
+
+```{r}
+dat <- get_data(read_all = F)
+read_allele_specific <- function(mysample){
+  hscn <- fread(paste0(config$basedir, glue("zenododirectory/allele_specific_cn//{mysample}-hscn.csv.gz")))
+  return(hscn)
+}
+
+SAMPLES <- list.files(paste0(config$basedir, "zenododirectory/allele_specific_cn/"), pattern = "csv.gz") %>% 
+  lapply(., function(x) str_remove(x, "-hscn.csv.gz")) %>% 
+  unlist()
+
+hscn <- lapply(SAMPLES, read_allele_specific) %>% rbindlist()
+hscn <- hscn %>% 
+  left_join(dat$metrics %>% select(cell_id, coverage_breadth, sample))
+```
+
+
+```{r}
+hscn_arm <- hscn %>% signals:::per_chrarm_cn()
+hscn_arm <- hscn_arm %>% 
+  left_join(dat$metrics %>% select(cell_id, coverage_breadth, sample, cell_type1, ploidy))
+
+hscn_arm_metrics <- hscn_arm %>% 
+  filter(!is.na(state_phase)) %>% 
+  filter(state_AS_phased != "1|1") %>% 
+  group_by(cell_type1, sample, ploidy, cell_id, coverage_breadth) %>% 
+  summarize(narm = n(), arms = paste0(paste0(chrarm, phase), collapse = ",")) %>% 
+  arrange(desc(coverage_breadth)) %>% 
+  ungroup()
+
+
+```
+
+## Plot example cells with 1q + 10q from B2-23
+
+### Individual cells
+
+```{r, fig.height=3}
+mypointsize <- 0.7
+hscn_arm_metrics %>% 
+  filter(narm < 4) %>% 
+  filter(sample == "B2-23") %>% 
+  filter(str_detect(arms, "1q")) %>% 
+  filter(str_detect(arms, "10q")) %>% 
+  print(n = 100)
+mychr <- c("1", "10")
+
+cell1 <- "SA1227-A98286A-R24-C24"
+cell2 <- "SA1227-A98302B-R54-C25"
+cell3 <- "SA1227-A98286B-R55-C59"
+
+gcell1 <- plotCNprofileBAF(hscn, tickwidth = 20,
+                 cellid = cell1,
+                 chrfilt = mychr , maxCN = 4,
+                 pointsize = 2.0, homolog = T,
+                 font_size = 8, line_size = 0.25
+                 )
+
+gcell2 <- plotCNprofileBAF(hscn, tickwidth = 20,
+                 cellid = cell2,
+                 chrfilt = mychr, maxCN = 4,
+                 pointsize = 2.0, homolog = T,
+                 font_size = 8, line_size = 0.25
+                 )
+
+gcell3 <- plotCNprofileBAF(hscn, tickwidth = 20,
+                 cellid = cell3,
+                 chrfilt = mychr, maxCN = 4,
+                 pointsize = 2.0, homolog = T,
+                 font_size = 8, line_size = 0.25
+                 )
+
+plot_grid(gcell1, gcell2, gcell3, ncol = 3)
+
+gcell1 <- plotCNprofileBAF(hscn %>% filter(totalcounts > 2), tickwidth = 20,legend.position = "none",font_size = 8,
+                 cellid = cell1, my_title = "",
+                 ideogram = T,
+                 chrfilt = mychr , maxCN = 4,
+                 pointsize = mypointsize, homolog = F,
+                 line_size = 0.25
+                 )
+
+gcell2 <- plotCNprofileBAF(hscn %>% filter(totalcounts > 2), tickwidth = 20, legend.position = "none",font_size = 8,
+                 cellid = cell2, ideogram = T, my_title = "",
+                 chrfilt = mychr , maxCN = 4,
+                 pointsize = mypointsize, homolog = F,
+                 line_size = 0.25
+                 )
+
+gcell3 <- plotCNprofileBAF(hscn %>% filter(totalcounts > 2), tickwidth = 20, legend.position = "none",font_size = 8,
+                 cellid = cell3, ideogram = T, my_title = "",
+                 chrfilt = mychr , maxCN = 4,
+                 pointsize =mypointsize, homolog = F,
+                 line_size = 0.25
+                 )
+
+plot_grid(gcell1, gcell2, gcell3, ncol = 3)
+```
+
+### Heatmap
+
+```{r}
+chroms <- c("1", "7", "10", "22", "16") 
+hscn_arm_metrics2 <- hscn_arm %>% 
+  filter(chrarm %in% paste0(chroms, "q")) %>% 
+  filter(!is.na(state_phase)) %>% 
+  filter(state_AS_phased != "1|1") %>% 
+  group_by(cell_type1, sample, ploidy, cell_id, coverage_breadth) %>% 
+  summarize(narm = n(), arms = paste0(paste0(chrarm, phase), collapse = ",")) %>% 
+  arrange(desc(coverage_breadth)) %>% 
+  ungroup()
+
+#these cells aren't relevent here but pass the filtering thresholds, we only want cells
+#with gains on 1q and losses on 7,10,16,22
+cells_to_remove <- c("SA1227-A98274A-R15-C44", "SA1227-A98270B-R44-C42", "SA1227-A98274A-R25-C51", "SA1227-A98286A-R16-C10")
+
+#make a dataframe with clusters to order the cells by alterations and allele
+mycells <- hscn_arm_metrics2 %>% 
+  filter(!cell_id %in% cells_to_remove) %>% 
+  filter(narm < 4) %>% 
+  filter(sample == "B2-23") %>% 
+  filter(str_detect(arms, "1q|7q|10q|22q|16q")) %>% 
+  #filter(str_detect(arms, "10q")) %>% 
+  mutate(clone_id = case_when(
+    str_detect(arms, "1qA") & narm == 1 ~ "A",
+    str_detect(arms, "1qB") & narm == 1 ~ "B",
+    str_detect(arms, "7qA") & narm == 1 ~ "C",
+    str_detect(arms, "7qB") & narm == 1 ~ "D",
+    str_detect(arms, "16qA") & narm == 1 ~ "E",
+    str_detect(arms, "16qB") & narm == 1 ~ "F",
+    str_detect(arms, "22qA") & narm == 1 ~ "G",
+    str_detect(arms, "22qB") & narm == 1 ~ "H",
+    str_detect(arms, "16qA") & str_detect(arms, "1qA") ~ "I",
+    str_detect(arms, "16qB") & str_detect(arms, "1qA") ~ "J",
+    str_detect(arms, "16qA") & str_detect(arms, "1qB") ~ "K",
+    str_detect(arms, "16qB") & str_detect(arms, "1qB") ~ "L",
+    str_detect(arms, "10qA") & str_detect(arms, "1qA") ~ "M",
+    str_detect(arms, "10qB") & str_detect(arms, "1qA") ~ "N",
+    str_detect(arms, "10qA") & str_detect(arms, "1qB") ~ "O",
+    str_detect(arms, "10qB") & str_detect(arms, "1qB") ~ "P",
+  )) %>% 
+  filter(!is.na(clone_id)) %>% 
+  print(n = 100)
+
+
+p1 <- hscn %>% 
+  filter(cell_id %in% mycells$cell_id) %>% 
+  filter(chr %in% chroms) %>% 
+  plotHeatmap(., spacer_cols = 5,
+              clusters = mycells, 
+              plottree = F,
+              column_title_gp = gpar(fontsize = 8),
+              linkheight = 2,
+              chrlabels = chroms,
+              show_heatmap_legend = F,
+              plotfrequency = F, 
+              frequency_height = 0.5,
+              anno_width = 0.1,
+              annofontsize = 7,
+              show_clone_label = T,
+              show_legend = F,
+              show_clone_text = F,
+              show_library_label = F,
+              reorderclusters = T)
+
+p1g <- grid.grabExpr(ComplexHeatmap::draw(p1), width = 89 * 0.039, height = 2)
+
+p2 <- hscn %>% 
+  filter(cell_id %in% mycells$cell_id) %>% 
+  filter(chr %in% chroms) %>% 
+  plotHeatmap(., spacer_cols = 5,
+              clusters = mycells, 
+              plotcol = "state_phase",
+              plottree = F,
+              column_title_gp = gpar(fontsize = 8),
+              linkheight = 2,
+              chrlabels = chroms,
+              show_heatmap_legend = F,
+              show_clone_label = F,
+              plotfrequency = F, 
+              frequency_height = 0.5,
+              anno_width = 0.1,
+              annofontsize = 7,
+              show_legend = F,
+              show_clone_text = F,
+              show_library_label = F,
+              reorderclusters = T)
+
+p2g <- grid.grabExpr(ComplexHeatmap::draw(p2), width = 89 * 0.039, height = 2)
+
+
+plot_grid(p1g, p2g)
+```
+
+## Summary across cohort
+
+```{r}
+chroms <- c("1", "7", "10", "22", "16") 
+events <- c("1q-Gain", "7q-Loss", "10q-Loss", "22q-Loss", "16q-Loss")
+gallele <- hscn_arm %>% 
+  filter(chrarm %in% paste0(chroms, "q")) %>% 
+  filter(!is.na(state_phase)) %>% 
+  mutate(gain_loss = case_when(
+    state > ploidy ~ "Gain",
+    state < ploidy ~ "Loss",
+    TRUE ~ "Neutral"
+  )) %>% 
+  filter(gain_loss != "Neutral") %>% 
+  mutate(event = paste(chrarm, gain_loss, sep = "-")) %>% 
+  filter(event %in% events) %>% 
+  filter(phase != "Balanced") %>% 
+  group_by(sample, phase, event) %>% 
+  summarise(n = n()) %>% 
+  mutate(event = factor(event, levels = events)) %>% 
+  ggplot(aes(x = sample, y = n, fill = phase)) +
+  geom_col(position = position_dodge2(width = 0.9, preserve = "single")) +
+  facet_wrap(~event, ncol = 5) +
+  scale_fill_manual(values = as.vector(scCNphase_colors[c("A-Hom", "B-Hom")])) +
+  #panel_border() +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  xlab("") +
+  theme_cowplot(font_size = 7, line_size = 0.25) +
+  theme(legend.position = c(0.04, 0.9)) +
+  labs(fill = "") +
+  theme(strip.background = element_rect(colour="white", fill="white"),
+        panel.spacing = unit(1, "lines")) +
+  ylab("# cells")
+
+gallele
+```
+
+```{r}
+npatients <- length(unique(hscn_arm$sample))
+hscn_arm %>% 
+  filter(chrarm %in% paste0(chroms, "q")) %>% 
+  filter(!is.na(state_phase)) %>% 
+  mutate(gain_loss = case_when(
+    state > ploidy ~ "Gain",
+    state < ploidy ~ "Loss",
+    TRUE ~ "Neutral"
+  )) %>% 
+  filter(gain_loss != "Neutral") %>% 
+  mutate(event = paste(chrarm, gain_loss, sep = "-")) %>% 
+  filter(event %in% events) %>% 
+  filter(phase != "Balanced") %>% 
+  group_by(sample, phase, event) %>% 
+  summarise(n = n()) %>% 
+  mutate(event = factor(event, levels = events)) %>% 
+  group_by(event) %>% 
+  pivot_wider(names_from = "phase", values_from = "n") %>% 
+  replace_na(list(A = 0, B = 0)) %>% 
+  group_by(event) %>% 
+  summarise(n = sum(A > 0 & B > 0))
+  
+
+```
+
+## Final figure
+
+```{r}
+leg <- plot_grid(signals::make_copynumber_legend(ncolcn = 12, ncolas = 6, cntitle = "Copy Number", direction = "horizontal", font_size = 8))
+hm <- plot_grid(p1g, p2g)
+
+cells <- plot_grid(gcell3, NULL, gcell1, NULL, gcell2, ncol = 1, rel_heights = c(1, -0.2, 1, -0.2, 1))
+
+gtop <- plot_grid(NULL, hm, NULL, cells, ncol = 4, 
+                  rel_widths = c(0.04, 1.2, 0.05, 1),
+                  labels = c("a", "", "b"), label_size = 8)
+gtop <- plot_grid(gtop, NULL,  leg, NULL, ncol = 1, rel_heights = c(1, 0.05, 0.05, 0.025))
+
+gfinal <- plot_grid(gtop, NULL,  gallele, ncol = 1, rel_heights = c(4,0.3, 2),
+                    labels = c("", "", "c"), label_size = 8)
+
+gfinal %>% 
+  save_plot(here("Figures/Main/fig3.pdf"), 
+          .,
+          base_width = 2 * 89 * 0.039, base_height = 6)
+```
+
+```{r, fig.width=7, fig.height = 6}
+gfinal
+```
+
+## EDF6
+
+Plots to show TP53 is LOH in B1-49 and allele specificity of the two cancer-like clones in B2-16.
+
+### B1-49
+
+```{r}
+extreme_class <- fread(here("../zenododirectory/intermediate/extreme_cell_class.csv"))
+
+g49 <- hscn %>% 
+  filter(sample == "B1-49") %>% 
+  filter(cell_id %in% extreme_class[clone_id == "Cancer-like"]$cell_id) %>% 
+  consensuscopynumber() %>% 
+  plotCNprofileBAF(., tickwidth = 20,
+                   legend.position = "none",
+                   font_size = 8,
+                 chrfilt = "17", 
+                 genes = c("TP53", "BRCA1"))
+g49
+
+plotCNprofileBAF(hscn, 
+                 cellid = "AT3684-A118379B-R58-C13", 
+                 chrfilt = "17", 
+                 genes = c("TP53", "BRCA1"))
+
+plotCNprofileBAF(hscn, 
+                 cellid = "AT3684-A118379B-R58-C13", legend.position = "none",
+                 #chrfilt = "17", 
+                 genes = c("TP53", "BRCA1"))
+
+g49 <- hscn %>% 
+  filter(sample == "B1-49") %>% 
+  filter(cell_id %in% unique(extreme_class[clone_id == "Cancer-like" & sample == "B1-49"]$cell_id)) %>% 
+  consensuscopynumber() %>% 
+  plotCNprofileBAF(., chrfilt = c("17"),
+                   genes = c("TP53", "BRCA1"), 
+                   legend.position = "none", 
+                   font_size = 8,
+                   line_size = 0.25,
+                   ideogram = T,
+                   tickwidth = 20
+                   )
+g49
+g49_gap <- plot_grid(g49, NULL, NULL, ncol = 3)
+```
+
+### B2-16
+
+
+```{r}
+library(grid)
+library(ComplexHeatmap)
+make_heatmap_tree <- function(mysample, hscn, clusters = NULL, plotcol = "state"){
+  
+  mytree <- ape::read.tree(file = paste0(config$basedir,  glue::glue("zenododirectory/trees/{mysample}-sitka-processed.newick")))
+  if (!is.null(clusters)){
+    mytree <- ape::keep.tip(mytree, clusters$cell_id)
+  }
+  cellorder <- mytree$tip.label[mytree$edge[, 2]]
+  cnaneuploid <- hscn %>% filter(cell_id %in% mytree$tip.label)
+  my_title <- ""
+  chroms <- c(paste0(1:11), "13", "15", "17", "20", "X")
+  p <- plotHeatmap(cnaneuploid, 
+                   plotcol = plotcol,
+          tree = mytree %>% ape::ladderize(),
+          column_title = my_title,
+          column_title_gp = gpar(fontsize = 8),
+          linkheight = 2,
+          chrlabels = chroms,
+          show_heatmap_legend = F,
+          plotfrequency = F, 
+          frequency_height = 0.5,
+          anno_width = 0.02,
+          annofontsize = 7,
+          show_legend = F,
+          show_clone_text = F,
+          show_library_label = F,
+          show_clone_label = F,
+          plottree = T,
+          reorderclusters = T,
+          tree_width = 1,
+          clone_pal = c("A" = "firebrick4", "B"= "deepskyblue4"),
+          clusters = clusters)
+  pout <- grid.grabExpr(draw(p), width = 89 * 0.039, height = 2)
+  return(list(hm = pout, tree = mytree))
+}
+
+mytree <- ape::read.tree(file = paste0(config$basedir,  glue::glue("zenododirectory/trees/B2-16-sitka-processed.newick")))
+myclusters <- data.frame(cell_id = mytree$tip.label)
+myclusters <- data.frame(cell_id = mytree$tip.label) %>% mutate(clone_id = ifelse(cell_id %in% c("SA1150-A95735B-R42-C51", "SA1150-A95735B-R34-C35", "SA1150-A95735B-R44-C60", "SA1150-A95735B-R43-C30"), "A", "B")) %>% 
+  left_join(dat$metrics %>% select(cell_id, ploidy)) %>% 
+  filter(ploidy == 2)
+
+hm_B2_16 <- make_heatmap_tree("B2-16", hscn, clusters = myclusters)
+hm_B2_16_as <- make_heatmap_tree("B2-16", hscn, clusters = myclusters, plotcol = "state_phase")
+```
+
+### Final extended data figure
+
+```{r}
+
+plot_grid(hm_B2_16$hm, 
+          hm_B2_16_as$hm,
+          NULL,
+          g49_gap,
+          labels = c("a", "", "b"), label_size = 8,
+          ncol = 1, rel_heights = c(1,1,0.03, 1)) %>% 
+    save_plot(here("Figures/Extended/EDF6.pdf"), ., 
+            base_width = 2 * 89 * 0.039, base_height = 5.5)
+
+```
+
+```{r, fig.height=5.5}
+plot_grid(hm_B2_16$hm, 
+          hm_B2_16_as$hm,
+          NULL,
+          g49_gap,
+          labels = c("a", "", "b"), label_size = 8,
+          ncol = 1, rel_heights = c(1,1,0.03, 1)) 
+
+```
+
+
+## session info
+
+```{r}
+sessionInfo()
+```
+
+
+

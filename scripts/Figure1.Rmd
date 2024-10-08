@@ -1,0 +1,617 @@
+---
+title: "Figure 1: Summary and example heatmaps"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width=7.08, fig.height=6.69)
+```
+
+```{r}
+library(here)
+source(here("src/setup.R"))
+```
+
+## Read in data and summarize
+
+```{r}
+dat <- get_data(read_all = TRUE)
+
+total_cells_in_study <- dat$metrics[keep_cell == TRUE] %>% 
+  add_count(sample) %>% 
+  filter(n >= config$cutoff) %>% 
+  nrow()
+
+```
+
+Total number of cells study: `r nrow(total_cells_in_study)`
+
+```{r}
+
+forplot <- dat$metrics[keep_cell == TRUE] %>% 
+  add_count(sample) %>% 
+  filter(n_aneuploid_arm < 5) %>% 
+  filter(n >= config$cutoff)
+
+```
+
+Total number of cells after filtering: `r nrow(forplot)`
+Total number of samples after filtering: `r  length(unique(forplot$sample))`
+
+```{r}
+forplot %>% 
+  distinct(sample, genotype, n) %>% 
+  knitr::kable()
+```
+
+```{r}
+
+extreme_class <- fread(here("../zenododirectory/intermediate/extreme_cell_class.csv")) %>% 
+  select(cell_id, extreme_type)
+
+cnarm <- dat$cnarm %>% 
+  filter(cell_id %in% forplot$cell_id) %>% 
+  left_join(dat$metrics %>% select(cell_id, sample, cell_type1, genotype, organoid)) %>% 
+  mutate(type = case_when(
+    state > ploidy_compare ~ "Gain",
+    state < ploidy_compare ~ "Loss",
+    state == ploidy_compare ~ "Neutral"
+  )) %>% 
+  mutate(chrtype = paste0(chrarm, "_", type)) %>% 
+  filter(type != "Neutral") %>% 
+  group_by(cell_id) %>% 
+  summarize(narm = n(), arms = paste0(chrtype, collapse = ":")) %>% 
+  ungroup()
+
+
+dat$metrics %>% 
+  filter(cell_id %in% forplot$cell_id) %>% 
+  select(cell_id, sample, cell_type1, quality, coverage_breadth, coverage_depth, ploidy_compare, n_aneuploid_arm, n_arm_loss, n_arm_gain, fga) %>% 
+  left_join(extreme_class) %>% 
+  rename(cell_type = cell_type1) %>% 
+  summarise(mean(coverage_depth), min(coverage_depth), max(coverage_depth))
+```
+
+## Aneuploid cells
+
+```{r}
+
+g1_aneu <- forplot %>% 
+  group_by(sample, genotype, aneuploid) %>% 
+  summarize(ncells = n()) %>% 
+  ggplot(aes(x = fct_reorder(sample, ncells, .desc = T), y = ncells, fill = aneuploid)) +
+  geom_col() +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_fill_manual(values = c("azure3", "azure4"), ) +
+  ylab("Number of cells") +
+  facet_grid(~genotype,  scales = "free_x", space = "free_x") +
+  labs(fill = "Aneuploid") +
+  theme(legend.position = c(0.8, 0.7), strip.background = element_blank())
+
+g2_aneu <- forplot %>% 
+  group_by(sample, genotype, aneuploid) %>% 
+  summarize(ncells = n()) %>% 
+  mutate(f = ncells / sum(ncells)) %>% 
+  ggplot(aes(x = fct_reorder(sample, genotype), y = f, fill = aneuploid)) +
+  geom_col() +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_fill_manual(values = c("azure3", "azure4")) +
+  ylab("Fraction of cells") +
+  facet_grid(~genotype,  scales = "free_x", space = "free_x") +
+  theme(legend.position = "none", legend.title = element_text("Aneuploid"), strip.background = element_blank())
+
+cowplot::plot_grid(g1_aneu, g2_aneu, ncol = 1)
+```
+
+## Cell type
+
+
+```{r}
+
+ncellstot <- forplot %>% 
+  group_by(sample) %>% 
+  summarize(ncellstot = n())
+
+g1_celltype <- forplot %>% 
+  group_by(sample, genotype, cell_type1) %>% 
+  summarize(ncells = n()) %>% 
+  ungroup() %>% 
+  left_join(ncellstot) %>% 
+  ggplot(aes(x = fct_reorder(sample, ncellstot, .desc = T), 
+             y = ncells, fill = cell_type1)) +
+  geom_col(width = 0.65) +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_fill_manual(values = config$clrs$cell_type) +
+  ylab("# cells") +
+  facet_grid(~genotype,  scales = "free_x", space = "free_x") +
+  labs(fill = "Cell type") +
+  theme(legend.position = c(0.8, 0.83), strip.background = element_blank()) +
+  labs(fill = "")
+
+g2_celltype <- forplot %>% 
+  group_by(sample, genotype, cell_type1) %>% 
+  summarize(ncells = n()) %>% 
+  mutate(f = ncells / sum(ncells)) %>% 
+  left_join(ncellstot) %>% 
+  ggplot(aes(x = fct_reorder(sample, ncellstot, .desc = T), 
+             y = f, fill = cell_type1)) +
+  geom_col(width = 0.5) +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_fill_manual(values = config$clrs$cell_type) +
+  ylab("Fraction of cells") +
+  facet_grid(~genotype,  scales = "free_x", space = "free_x") +
+  theme(legend.position = "none", legend.title = element_text("Aneuploid"), strip.background = element_blank())
+
+g1_age <- forplot %>% 
+  group_by(sample, genotype, cell_type1) %>% 
+  summarize(ncells = n()) %>% 
+  mutate(f = ncells / sum(ncells)) %>% 
+  left_join(dat$clinical %>% select(patient_id, age) %>% rename(sample = patient_id)) %>% 
+  left_join(ncellstot) %>% 
+  distinct(sample, ncellstot, age) %>% 
+  ggplot(aes(x = fct_reorder(sample, ncellstot, .desc = T), 
+             y = age), fill = "grey70") +
+  geom_col(width = 0.65) +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  ylab("Age") +
+  facet_grid(~genotype,  scales = "free_x", space = "free_x") +
+  theme(strip.background = element_blank())
+
+g1_cancer <- forplot %>% 
+  group_by(sample, genotype, cell_type1) %>% 
+  summarize(ncells = n()) %>% 
+  mutate(f = ncells / sum(ncells)) %>% 
+  left_join(dat$clinical %>% select(patient_id, age, current_past_cancer) %>% rename(sample = patient_id)) %>% 
+  left_join(ncellstot) %>% 
+  distinct(sample, ncellstot, age, current_past_cancer) %>% 
+  ggplot(aes(x = fct_reorder(sample, ncellstot, .desc = T), 
+             y = "1", 
+             fill =current_past_cancer), col = "white") +
+  geom_tile() +
+  facet_grid(~genotype,  scales = "free_x", space = "free_x") +
+  theme(strip.background = element_blank()) +
+  removexaxis + 
+  scale_fill_manual(values = c("grey70", "deepskyblue4")) +
+  theme(legend.position = "none")#+coord_fixed()
+
+cowplot::plot_grid(g1_age, g1_celltype, g2_celltype, ncol = 1)
+```
+
+```{r}
+forplot %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  group_by(sample, aneuploid) %>% 
+  summarise(n = dplyr::n()) %>%
+  pivot_wider(names_from = "aneuploid", values_from = "n", values_fill = list(n = 0)) %>% 
+  mutate(frac = `TRUE` / (`TRUE` + `FALSE`)) %>% 
+  ungroup() %>% 
+  summarise(mean_frac = mean(frac),
+            median_frac = median(frac),
+            low_q = quantile(frac, 0.0),
+            high_q = quantile(frac, 1.0)) %>% 
+  knitr::kable()
+
+```
+
+```{r}
+forplot %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  group_by(sample, aneuploid) %>% 
+  summarise(n = dplyr::n()) %>%
+  pivot_wider(names_from = "aneuploid", values_from = "n", values_fill = list(n = 0)) %>% 
+  mutate(ntot = (`TRUE` + `FALSE`)) %>% 
+  mutate(naneuploid = `TRUE`) %>% 
+  select(sample, ntot, naneuploid) %>% 
+  mutate(frac = naneuploid / ntot) %>% 
+  left_join(dat$clinical %>% select(patient_id, age) %>% rename(sample = patient_id)) %>% 
+  ungroup() %>% 
+  arrange(desc(frac)) %>% 
+  knitr::kable()
+
+```
+
+## Stats
+
+```{r}
+library(ggpubr)
+my_comparisons <- list(c("BRCA1", "WT"), c("BRCA2", "WT"))
+symnum.args <- list(cutpoints = c( 0.00, 0.001, 0.01, 0.05, 1), symbols = c("***", "**", "*", "ns"))
+gcomp <- forplot %>% 
+  group_by(sample, genotype, aneuploid) %>% 
+  summarise(n = dplyr::n()) %>%
+  pivot_wider(names_from = "aneuploid", values_from = "n", values_fill = list(n = 0)) %>% 
+  mutate(frac = `TRUE` / (`TRUE` + `FALSE`)) %>% 
+  ggplot(aes(x = genotype, y = frac * 100, fill = genotype)) +
+  geom_boxplot(width = 0.5, outlier.colour = NA, size = 0.2) +
+  stat_compare_means(#aes(label = paste0(..p.signif..)), 
+                     size = 2.2,  #label.y.npc = 0.4,
+                     method = "wilcox.test",
+                     #symnum.args = symnum.args, 
+                     label.x = 1, comparisons = my_comparisons, size = 3) +
+  geom_jitter(width = 0.1, height = 0.0, size = 0.1) +
+  scale_x_discrete(guide = guide_axis(angle = 0)) +
+  #ylab("") +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = unlist(config$clrs$genotype)) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  xlab("") +
+  ylab("% cells aneuploid") +
+  scale_y_continuous(limits = c(0, 10), breaks = c(0,2,4,6, 8,10))
+gcomp
+```
+
+```{r}
+
+forplot %>% 
+  group_by(sample, genotype, aneuploid) %>% 
+  summarise(n = dplyr::n()) %>%
+  pivot_wider(names_from = "aneuploid", values_from = "n", values_fill = list(n = 0)) %>% 
+  mutate(frac = `TRUE` / (`TRUE` + `FALSE`)) %>% 
+  filter(genotype != "BRCA2") %>% 
+  wilcox.test(frac ~ genotype, data = .) %>% 
+  print(.)
+
+forplot %>% 
+  group_by(sample, genotype, aneuploid) %>% 
+  summarise(n = dplyr::n()) %>%
+  pivot_wider(names_from = "aneuploid", values_from = "n", values_fill = list(n = 0)) %>% 
+  mutate(frac = `TRUE` / (`TRUE` + `FALSE`)) %>% 
+  filter(genotype != "BRCA1") %>% 
+  wilcox.test(frac ~ genotype, data = .) %>% 
+  print(.)
+
+  
+
+```
+
+
+```{r}
+
+forplot %>% 
+  group_by(sample, genotype, aneuploid) %>% 
+  summarise(n = dplyr::n()) %>%
+  pivot_wider(names_from = "aneuploid", values_from = "n", values_fill = list(n = 0)) %>% 
+  mutate(frac = `TRUE` / (`TRUE` + `FALSE`)) %>% 
+  filter(genotype != "BRCA2") %>% 
+  t.test(frac ~ genotype, data = .) %>% 
+  print(.)
+
+forplot %>% 
+  group_by(sample, genotype, aneuploid) %>% 
+  summarise(n = dplyr::n()) %>%
+  pivot_wider(names_from = "aneuploid", values_from = "n", values_fill = list(n = 0)) %>% 
+  mutate(frac = `TRUE` / (`TRUE` + `FALSE`)) %>% 
+  filter(genotype != "BRCA1") %>% 
+  t.test(frac ~ genotype, data = .) %>% 
+  print(.)
+
+  
+
+```
+
+```{r}
+library(ggpubr)
+my_comparisons2 <- list(c("Luminal", "Basal"))
+gcomp2 <- forplot %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  group_by(sample, cell_type1, aneuploid) %>% 
+  summarise(n = dplyr::n()) %>%
+  pivot_wider(names_from = "aneuploid", values_from = "n", values_fill = list(n = 0)) %>% 
+  mutate(frac = `TRUE` / (`TRUE` + `FALSE`), ntot = (`TRUE` + `FALSE`)) %>% 
+  filter(ntot > config$cutoff) %>% 
+  ggplot(aes(x = cell_type1, y = frac * 100, fill = cell_type1)) +
+  geom_boxplot(width = 0.5, outlier.colour = NA, size = 0.2) +
+  stat_compare_means(#aes(label = paste0(..p.signif..)), 
+                     size = 2.2,  label.y.npc = 0.9,method = "wilcox.test",
+                     #symnum.args = symnum.args, 
+                     label.x = 1, comparisons = my_comparisons2) +
+  geom_jitter(width = 0.1, height = 0.0, size = 0.1) +
+  scale_x_discrete(guide = guide_axis(angle = 0)) +
+  #ylab("") +
+  theme(legend.position = "none") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_fill_manual(values = unlist(config$clrs$cell_type)) +
+  xlab("") +
+  ylab("% cells aneuploid") +
+  scale_y_continuous(limits = c(0, 10), breaks = c(0,2,4,6, 8,10))
+gcomp2
+```
+
+
+```{r}
+
+forplot %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  group_by(sample, cell_type1, aneuploid) %>% 
+  summarise(n = dplyr::n()) %>%
+  pivot_wider(names_from = "aneuploid", values_from = "n", values_fill = list(n = 0)) %>% 
+  mutate(frac = `TRUE` / (`TRUE` + `FALSE`), ntot = (`TRUE` + `FALSE`)) %>% 
+  filter(ntot > config$cutoff) %>% 
+  wilcox.test(frac ~ cell_type1, data = .) %>% 
+  print(.)
+
+forplot %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  group_by(sample, cell_type1, aneuploid) %>% 
+  summarise(n = dplyr::n()) %>%
+  pivot_wider(names_from = "aneuploid", values_from = "n", values_fill = list(n = 0)) %>% 
+  mutate(frac = `TRUE` / (`TRUE` + `FALSE`), ntot = (`TRUE` + `FALSE`)) %>% 
+  filter(ntot > config$cutoff) %>% 
+  t.test(frac ~ cell_type1, data = .) %>% 
+  print(.)
+```
+
+## Example cells
+
+```{r, fig.height=2.5}
+dt <- dat$cnarm
+
+mycells <- dt %>% 
+    filter(chrarm == "1q" & state == 3) %>% 
+    inner_join(dt %>% filter(chrarm == "16q" & state == 1), by = "cell_id") %>% 
+    select(cell_id)
+
+metrics_filt <- dat$metrics %>% 
+  filter(cell_id %in% mycells$cell_id) %>% 
+  arrange(desc(coverage_depth))
+
+metrics_sort <- dat$metrics %>% 
+  arrange(desc(coverage_depth))
+
+(gcell2 <- plotCNprofile(dat$cn %>% filter(filt == FALSE), cellid = metrics_filt$cell_id[1], maxCN = 5, pointsize = 0.5))
+
+(gcell1 <- plotCNprofile(dat$cn %>% filter(filt == FALSE), cellid = metrics_sort$cell_id[1], maxCN = 5, pointsize = 0.5))
+
+cowplot::plot_grid(gcell1 + theme_cowplot(font_size = 8, line_size = 0.25) + removexaxis + theme(legend.position = "none") + ylab("Copy\nNumber"),
+          gcell2 + theme_cowplot(font_size = 8, line_size = 0.25) + theme(legend.position = "none") + ylab("Copy\nNumber"),
+          ncol = 1, axis = "hv", align = "lrtb")
+```
+
+
+```{r}
+dat$metrics[keep_cell == TRUE] %>% 
+  group_by(sample) %>% 
+  summarize(ncells = n(), cov = mean(coverage_depth)) %>% 
+  ungroup() %>% 
+  summarise(cov_mean = mean(cov), 
+            cov_median = median(cov),
+            cov_low = min(cov),
+            cov_high = max(cov),
+            ncells_mean = mean(ncells),
+            ncells_median = median(ncells),
+            ncells_high = max(ncells),
+            ncells_low = min(ncells),
+            totcells = sum(ncells))
+
+```
+
+```{r}
+dat$metrics[keep_cell == TRUE] %>% 
+  filter(organoid == "FALSE") %>% 
+  filter(genotype != "ATM") %>% 
+  filter(cell_type1 != "Bulk") %>% 
+  group_by(sample, genotype, cell_type1) %>% 
+  summarize(ncells = n(), cov = mean(coverage_depth)) %>% 
+  ungroup() %>% 
+  arrange(desc(cov)) %>% 
+  knitr::kable() 
+```
+
+## Heatmaps
+
+```{r}
+library(grid)
+library(ComplexHeatmap)
+library(gridtext)
+samples <- forplot %>% 
+  group_by(sample, aneuploid) %>% 
+  summarise(n = dplyr::n()) %>%
+  pivot_wider(names_from = "aneuploid", values_from = "n", values_fill = list(n = 0)) %>% 
+  mutate(frac = `TRUE` / (`TRUE` + `FALSE`)) %>% 
+  pull(sample)
+
+chroms <- c(paste0(1:11), "13", "15", "17", "20", "X")
+glist <- list()
+for (mysample in samples){
+  print(mysample)
+  cell_md <- forplot %>% 
+    dplyr::filter(sample == mysample & aneuploid == TRUE) %>% 
+    mutate(clone_id = ifelse(cell_type1 == "Luminal", "L", "B")) %>% 
+    mutate(clone_id = cell_type1)
+  totalcells <- dat$metrics %>% 
+    dplyr::filter(sample == mysample) %>% 
+    dplyr::filter(keep_cell == TRUE) %>% 
+    nrow()
+  cn <- dat$cn %>% dplyr::filter(cell_id %in% cell_md$cell_id)
+  if (mysample == "WT-7"){
+    cl <- list(tree = NULL)
+  } else{
+    cl <- umap_clustering(cn, minPts = 3,
+                          umapmetric = "euclidean",
+                          min_dist = 0, 
+                          field = "state", 
+                          n_neighbors = 20, 
+                          seed = 123)
+  }
+  ptid <- strsplit(mysample, "-")[[1]][2]
+  if (cell_md$genotype[1] == "WT"){
+      my_title = paste0("Donor ", ptid, ", *", cell_md$genotype[1], "*, ", nrow(cell_md), "/", totalcells, " cells")
+  } else{
+      my_title = paste0("Donor ", ptid, ", *", cell_md$genotype[1], "*+/-", ", ", nrow(cell_md), "/", totalcells, " cells")
+  }
+  pdf(here(paste0("Figures/Heatmaps/", mysample, "_heatmap.pdf")), 
+      w = 89 * 0.039,
+      h = 2)
+  p <- plotHeatmap(cn,
+              column_title = ComplexHeatmap::gt_render(my_title),
+              clone_pal = unlist(config$clrs$cell_type),
+              column_title_gp = gpar(fontsize = 7),
+              linkheight = 2,
+              chrlabels = chroms,
+              show_heatmap_legend = F,
+              plotfrequency = T, 
+              frequency_height = 0.3,
+              anno_width = 0.1,
+              annofontsize = 6,
+              show_legend = F,
+              show_clone_text = F,
+              show_library_label = F,
+              tree = cl$tree,
+              plottree = F,
+              reorderclusters = T,
+              clusters = cell_md)
+  print(p)
+  glist[[mysample]] <- grid.grabExpr(draw(p), width = 89 * 0.039, height = 2)
+  dev.off()
+}
+```
+
+
+### Create composite heatmaps
+
+```{r}
+glist[str_detect(samples, "B1-")] %>% 
+  cowplot::plot_grid(plotlist = ., ncol = 2) %>% 
+  cowplot::plot_grid(., NULL, ncol = 1, rel_heights = c(1, 0.05)) %>% 
+  cowplot::save_plot(plot = .,
+            filename = here("Figures/Heatmaps/BRCA1.pdf"), 
+            base_height = 6 * 2 + 0.5,
+            base_width = 2 * 89 * 0.039)
+
+glist[str_detect(samples, "B1-")] %>% 
+  cowplot::plot_grid(plotlist = ., ncol = 3) %>% 
+  cowplot::plot_grid(., NULL, ncol = 1, rel_heights = c(1, 0.05)) %>% 
+  cowplot::save_plot(plot = .,
+            filename = here("Figures/Heatmaps/BRCA1_wide.pdf"), 
+            base_height = 3 * 2 + 0.5,
+            base_width = 2 * 89 * 0.039)
+
+glist[str_detect(samples, "WT-")] %>% 
+  cowplot::plot_grid(plotlist = ., ncol = 2) %>% 
+  cowplot::plot_grid(., NULL, ncol = 1, rel_heights = c(1, 0.05)) %>% 
+  cowplot::save_plot(plot = .,
+            filename = here("Figures/Heatmaps/WT.pdf"), 
+            base_height = 5 * 2 + 0.5,
+            base_width = 2 * 89 * 0.039)
+
+glist[str_detect(samples, "WT-")] %>% 
+  cowplot::plot_grid(plotlist = ., ncol = 3) %>% 
+  cowplot::plot_grid(., NULL, ncol = 1, rel_heights = c(1, 0.05)) %>% 
+  cowplot::save_plot(plot = .,
+            filename = here("Figures/Heatmaps/WT_wide.pdf"), 
+            base_height = 0.75 * 3 * 2 + 0.5,
+            base_width = 2 * 89 * 0.039)
+
+glist[str_detect(samples, "B2-")] %>% 
+  cowplot::plot_grid(plotlist = ., ncol = 2) %>% 
+  cowplot::plot_grid(., NULL, ncol = 1, rel_heights = c(1, 0.05)) %>% 
+  cowplot::save_plot(plot = .,
+            filename = here("Figures/Heatmaps/BRCA2.pdf"), 
+            base_height = 4 * 2 + 0.5,
+            base_width = 2 * 89 * 0.039)
+
+glist[str_detect(samples, "B2-")] %>% 
+  cowplot::plot_grid(plotlist = ., ncol = 3) %>% 
+  cowplot::plot_grid(., NULL, ncol = 1, rel_heights = c(1, 0.05)) %>% 
+  cowplot::save_plot(plot = .,
+            filename = here("Figures/Heatmaps/BRCA2_wide.pdf"), 
+            base_height = 0.75 * 3 * 2 + 0.5,
+            base_width = 2 * 89 * 0.039)
+
+glist %>% 
+  cowplot::plot_grid(plotlist = ., ncol = 2) %>% 
+  cowplot::plot_grid(., NULL, ncol = 1, rel_heights = c(1, 0.05)) %>% 
+  cowplot::save_plot(plot = .,
+            filename = here("Figures/Heatmaps/All.pdf"), 
+            base_height = 8 * 2 + 0.5,
+            base_width = 2 * 89 * 0.039)
+
+glist %>% 
+  cowplot::plot_grid(plotlist = ., ncol = 4) %>% 
+  cowplot::plot_grid(., NULL, ncol = 1, rel_heights = c(1, 0.)) %>% 
+  cowplot::save_plot(plot = .,
+            filename = here("Figures/Heatmaps/All_wide.pdf"), 
+            base_height = 6 * 2 + 0.5,
+            base_width = 2.6 * 89 * 0.039)
+
+glist[c("B1-7486", "B1-7218", "B1-7506", "B1-6139", "B2-7156", "WT-7287", "WT-7450", "WT-7449")] %>% 
+  cowplot::plot_grid(plotlist = ., ncol = 2) %>% 
+  cowplot::plot_grid(., NULL, ncol = 1, rel_heights = c(1, 0.)) %>% 
+  cowplot::save_plot(plot = .,
+            filename = here("Figures/Heatmaps/new_samples.pdf"), 
+            base_height = 3 * 2 + 0.5,
+            base_width = 2 * 89 * 0.039)
+
+```
+
+## Final figure
+
+```{r, fig.height=3}
+gcells <- cowplot::plot_grid(gcell1 + theme_cowplot(font_size = 8, line_size = 0.25) +  removexaxis + theme(legend.position = "none") + ylab("Copy\nNumber"),
+          gcell2 + theme_cowplot(font_size = 8, line_size = 0.25) + theme(legend.position = "none") + ylab("Copy\nNumber"),
+          ncol = 1, rel_heights = c(1, 1.2),
+          labels = c("b", "c"), label_size = 8)
+
+cnleg <- cowplot::plot_grid(NULL,
+                   cowplot::get_legend(plotCNprofile(dat$cnaneuploid) +
+                                         ggplot2::guides(colour = ggplot2::guide_legend(title = "Copy Number",
+        ncol = 12, byrow = TRUE,
+        override.aes = list(alpha = 1, size = 3, shape = 15)
+      )) +
+        theme_cowplot(font_size = 7)),
+                   NULL, ncol = 3, rel_widths = c(0.2, 1, 1))
+
+gmiddle <- glist[c("B1-6410",  "B1-6139", "B2-23", "WT-6")] %>% 
+  cowplot::plot_grid(plotlist = ., labels = c("d", "e", "f", "g"), label_size = 8) %>% 
+  cowplot::plot_grid(., cnleg, rel_heights = c(1, 0.1), ncol = 1)
+
+gsummary <- cowplot::plot_grid(g1_age + removexaxis,
+                      NULL,
+                      g1_cancer +
+                        removeyaxis +
+                        theme(
+                          strip.background = element_blank(),
+                          strip.text.x = element_blank()
+                        ),
+                      NULL,
+                      g1_celltype +
+                        theme(
+                          strip.background = element_blank(),
+                          strip.text.x = element_blank()
+                        ),
+                      rel_heights = c(1., -0.1,0.4, -0.1, 1.7),
+                      ncol = 1,
+                      axis = "lr", align = "v")
+
+gtop <- cowplot::plot_grid(gsummary, NULL, gcells, ncol = 3,
+                  rel_widths = c(0.9, 0.05, 1),
+                  labels = c("a"), label_size = 8)
+
+gbottom <- cowplot::plot_grid(NULL,gcomp2, gcomp, NULL, ncol = 4,
+          rel_widths = c(1,1,1.5,1), labels = c("", "h", "i", ""), label_size = 8)
+
+cowplot::plot_grid(gtop, NULL, gmiddle, gbottom,
+          NULL, ncol = 1, rel_heights = c(1.1, 0.1, 2.3,1, 0.05)) %>% 
+  cowplot::save_plot(here("Figures/Main/fig1.pdf"), .,base_width = 2 * 89 * 0.039, base_height = 8.3)
+
+```
+
+
+```{r, fig.height = 8.3, fig.width=7}
+cowplot::plot_grid(gtop, NULL, gmiddle, gbottom,
+          NULL, ncol = 1, rel_heights = c(1.1, 0.1, 2.3,1, 0.05))
+
+```
+
+## session info
+
+```{r}
+sessionInfo()
+```

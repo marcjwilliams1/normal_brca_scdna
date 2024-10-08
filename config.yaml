@@ -1,0 +1,76 @@
+#R pckgs
+#signals: '/home/william1/bin/R/signals/'
+
+#basedir: '/juno/work/shah/users/william1/projects/brugge/results/'
+basedir: "dir"
+cancerdir: "cancer_data/"
+
+supplementary_tables: "TablesFinal.xlsx"
+
+#plotting
+font_size: 7
+
+cutoff: 300
+
+clrs:
+  cell_type:
+    Luminal: "#776472"
+    Basal: "#E0D0C1"
+    Bulk: "#14080E"
+  genotype:
+    BRCA1: "#80A1C1"
+    BRCA2: "#87A878"
+    WT: "grey70"
+    ATM: "#D36135"
+  gain_loss:
+    Gain: "#550000"
+    Loss: "#28536C"
+  gain_loss2:
+    Gain: "#A50F15"
+    Loss: "#2171B5"
+    
+cell_types:
+  cat1:
+    Luminal:
+      - "LUMBAS"
+      - "LUM"
+      - "BL"
+      - "LUM-B2"
+      - "AV"
+      - "HS"
+      - "LUM-LEFT"
+      - "LUM-RIGHT"
+      - "LUM-M"
+      - "LUM-P"
+    Basal:
+      - "BAS"
+      - "BA"
+      - "BAS-LEFT"
+      - "BAS-RIGHT"
+    Bulk:
+      - "VFTISS"
+      - "MIX"
+      - "TISS"
+  cat2:
+    Luminal:
+      - "LUM"
+      - "AV"
+      - "HS"
+      - "LUM-LEFT"
+      - "LUM-RIGHT"
+      - "LUM-M"
+      - "LUM-P"
+    BL:
+      - "LUMBAS"
+      - "BL"
+    LUM-B2:
+      - "LUM-B2"
+    Basal:
+      - "BAS"
+      - "BA"
+      - "BAS-LEFT"
+      - "BAS-RIGHT"
+    Bulk:
+      - "VFTISS"
+      - "MIX"
+      - "TISS"

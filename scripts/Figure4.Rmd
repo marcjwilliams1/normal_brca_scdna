@@ -1,0 +1,690 @@
+---
+title: "Figure 4: Extreme aneuploidy"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width=7.0, fig.height=6.69)
+```
+
+```{r}
+library(here)
+library(ggtree)
+library(ggpubr)
+source(here("src/setup.R"))
+source(here("src/landscape_plots.R"))
+theme_set(theme_cowplot(font_size = 8, line_size = 0.25))
+```
+
+## Read in data
+
+```{r}
+dat <- get_data(read_all = TRUE)
+cn_arm <- dat$cnarm
+cndat_md <- distinct(dat$metrics, cell_id,cell_type1, sample, genotype, organoid)
+cn_arm <- left_join(cn_arm, cndat_md)
+```
+
+## Identify extreme aneuploid cells 
+
+### Find cutoff
+
+```{r}
+df_cum <- dat$metrics %>% filter(keep_cell == TRUE)
+
+total_cells <- nrow(df_cum %>% filter(n_aneuploid_arm > 0))
+
+df_cum %>% 
+  filter(n_aneuploid_arm > 0) %>% 
+  arrange(n_aneuploid_arm) %>% 
+  mutate(x = 1) %>% 
+  mutate(x = cumsum(x) / total_cells) %>% 
+  #filter(n_aneuploid_arm > 2) %>% 
+  ggplot(aes(y = x, x = n_aneuploid_arm)) + 
+  geom_line()
+
+df_cum %>% 
+  filter(n_aneuploid_arm > 0) %>% 
+  arrange(n_aneuploid_arm) %>% 
+  mutate(x = 1) %>% 
+  mutate(x = cumsum(x) / total_cells) %>% 
+  filter(x > 0.95)
+
+dat$metrics %>% 
+  #filter(cohort1 != "Bulk") %>% 
+  filter(keep_cell == TRUE) %>% 
+  replace_na(list(n_aneuploid_arm =0)) %>% 
+  filter(n_aneuploid_arm > 0) %>% 
+  group_by(n_aneuploid_arm) %>% 
+  summarise(n = n()) %>% 
+  mutate(n = n / sum(n)) %>% 
+  mutate(cumsum(n))
+
+#set extreme cutoff as. > 95%
+extreme_cutoff <- 6 
+```
+
+### Save plots of all extreme aneuploid cells to pdf
+
+```{r, fig.width = 15}
+
+mycells <- dat$metrics %>% filter(keep_cell == TRUE) %>% filter(n_aneuploid_arm > extreme_cutoff | 
+                                                                  cell_id %in% c("SA1150-A95735B-R34-C35",
+                                                                                 "SA1150-A95735B-R44-C60",
+                                                                                 "SA1150-A95735B-R42-C51",
+                                                                                 "SA1150-A95735B-R43-C30"))
+
+# pdf(here("Figures/Other/extreme_aneuploid_cells.pdf"), width = 12, h = 3)
+# for (mycell in mycells$cell_id){
+#   mycells_filt <- filter(mycells, cell_id == mycell)
+#   mytitle <- paste(mycells_filt$sample, mycells_filt$cell_type1, mycells_filt$genotype, mycells_filt$cell_id, sep = ", ")
+#   print(mycell)
+#   g <- plotCNprofile(dat$cn, cellid = mycell, maxCN = 12, y_axis_trans = "squashy", pointsize = 1.0) +
+#     theme(legend.position = "none") +
+#     ggtitle(mytitle)
+#   print(g)
+# }
+# dev.off()
+
+```
+
+### Read in cancer data
+
+```{r}
+cancer <- fread(paste0(config$cancerdir, "nikzainal_bins.csv.gz")) %>% 
+  mutate(sample = str_remove(sample, "a")) %>% 
+  mutate(sample = str_remove(sample, "_2"))
+
+cancer_metadata <- fread(paste0(config$cancerdir, "nikzainal_metadata.csv.gz"))
+
+#only include samples with purity > 0.5
+samples_to_keep <- cancer_metadata %>% 
+  filter(Aberrant.cell.fraction > 0.5) %>% 
+  pull(sample)
+cancer <- filter(cancer, sample %in% samples_to_keep)
+cancer <- left_join(cancer %>% select(-ploidy), cancer_metadata %>% select(sample, ploidy))
+cancer$ploidy <- round(cancer$ploidy)
+
+cancer_arm <- signals::per_chrarm_cn(cancer %>% rename(cell_id = sample) %>% mutate(copy = state))
+cancer_arm <- cancer_arm %>% 
+  left_join(distinct(cancer, sample, ploidy) %>% rename(cell_id = sample)) %>% 
+  mutate(ploidy = round(ploidy))
+
+cn_arm_format <- dat$metrics %>% mutate(narm = n_aneuploid_arm)
+```
+
+```{r}
+mycells <- dat$metrics %>% filter(keep_cell == TRUE) %>% 
+  filter(n_aneuploid_arm > extreme_cutoff | 
+           cell_id %in% c("SA1150-A95735B-R34-C35", 
+                          "SA1150-A95735B-R44-C60",
+                          "SA1150-A95735B-R42-C51",
+                          "SA1150-A95735B-R43-C30"))
+extreme_cells <- mycells
+cn <- dat$cn %>% filter(cell_id %in% mycells$cell_id)
+```
+
+### Correlation with cancer
+
+```{r}
+pl_cancer <- cancer %>%
+  mutate(ploidy = round(ploidy)) %>% 
+  as.data.table() %>%
+  .[, list(Gain = sum(state > ploidy, na.rm = TRUE) / .N,
+         Loss = sum(state < ploidy, na.rm = TRUE) / .N,
+         n = .N), by = .(chr, start, end)] %>%
+  plottinglist_()
+
+cancer_average <- pl_cancer$CNbins %>% 
+  mutate(copy = Gain - Loss, state = Gain - Loss, cell_id = "x") %>% 
+  na.omit()
+
+extreme_cancer <- cn %>% 
+  left_join(cancer_average %>% select(-cell_id), by = c("chr", "start", "end"), suffix = c(".dlp", ".cancer"))
+
+library(lsa)
+results <- extreme_cancer %>% 
+  filter(!is.na(copy.dlp)) %>% 
+  filter(!is.na(state.cancer)) %>% 
+  group_by(cell_id) %>% 
+  summarise(cor = cor(copy.dlp, state.cancer),
+            cor_sp = cor(state.dlp, state.cancer, method = "spearman"),
+            cosine = cosine(state.dlp, state.cancer)[1]) %>% 
+  ungroup()
+            
+
+df <- inner_join(results, extreme_cells) %>% 
+    mutate(gain_loss = (n_arm_gain - n_arm_loss)) %>% 
+  ungroup()
+
+cutoff <- 0.2
+
+df <- df %>% 
+  mutate(extreme_type = case_when(
+    cor >= cutoff ~ "Cancer-like",
+    cor < cutoff & ploidy_mean < 2.5 ~ "Low ploidy",
+    cor < cutoff & ploidy_mean > 2.5 ~ "High ploidy",
+  )) %>% 
+  ungroup()
+df$clone_id <- df$extreme_type
+table(df$extreme_type)
+
+extreme_cols <- c("Cancer-like" = "#7A8450",
+                  "Low ploidy" = "#0081A7", 
+                  "High ploidy" = "#92140C")
+
+library(ggExtra)
+gextreme <- df %>% 
+  ggplot(aes(x = cor, y = ploidy_mean, fill = extreme_type, col = extreme_type)) +
+  geom_point(size = 0.5) +
+  xlab("Correlation with breast cancer") +
+  ylab("Ploidy") +
+  #geom_hline(yintercept = mean(tcga_df$gain - tcga_df$loss), lty = 2, col = "firebrick4") +
+  theme_cowplot(font_size = config$font_size, line_size = 0.25) +
+  stat_ellipse(type = "norm",geom = "polygon",alpha = 0.25, col = NA) +
+  scale_fill_manual(values = extreme_cols) +
+  scale_color_manual(values = extreme_cols) +
+  ylim(c(0, 5)) +
+  theme(legend.position = "none")
+gextreme
+gextreme <- ggMarginal(gextreme, type = "density", bins = 35, fill = "grey70", col = NA, size = 10, adjust = 0.6)
+gextreme
+```
+
+```{r}
+library(ggExtra)
+gextreme2 <- df %>% 
+  ggplot(aes(x = cor, y = ploidy_mean, fill = extreme_type, col = extreme_type)) +
+  geom_point(size = 0.5) +
+  xlab("Correlation with TCGA") +
+  ylab("Ploidy") +
+  #geom_hline(yintercept = mean(tcga_df$gain - tcga_df$loss), lty = 2, col = "firebrick4") +
+  theme_cowplot(font_size = config$font_size) +
+  #stat_ellipse(type = "norm",geom = "polygon",alpha = 0.25, col = NA) +
+  scale_fill_manual(values = extreme_cols) +
+  scale_color_manual(values = extreme_cols) +
+  ylim(c(0, 5)) +
+  theme(legend.position = "none") +
+  facet_wrap(~sample) +
+  panel_border()
+gextreme2
+```
+
+## Heatmaps for all extreme aneuploidy cells.
+
+```{r}
+library(grid)
+library(ComplexHeatmap)
+
+md <- dat$metrics[keep_cell == TRUE] %>% 
+  add_count(sample) %>% 
+  filter(n >= config$cutoff)
+cell_list <- extreme_cells %>% 
+  filter(cell_id %in% md$cell_id) %>% 
+  add_count(sample)
+
+chroms <- c(paste0(1:11), "13", "15", "17", "20", "X")
+glist <- list()
+for (mysample in unique(cell_list$sample)){
+  print(mysample)
+  cells_to_keep <- cell_list %>% filter(sample == mysample)
+  print(nrow(cells_to_keep))
+  cell_md <- df %>% filter(cell_id %in% cells_to_keep$cell_id)
+  cn <- dat$cn %>% filter(cell_id %in% cells_to_keep$cell_id)
+  # if (nrow(cells_to_keep) < 2){
+  #   next
+  # }
+  if (nrow(cells_to_keep) < 4){
+    cl <- list(tree = NULL)
+    cl$clusters <- cells_to_keep %>% mutate(clone_id = "0")
+  } else{
+    cl <- umap_clustering(cn, minPts = 3,n_neighbors = 20, min_dist = 0, field = "state", umapmetric = "euclidean")
+  }
+  ptid <- strsplit(mysample, "-")[[1]][2]
+  my_title = paste0("Patient ", ptid, ", ", cell_md$genotype[1], "+/-", ", ", nrow(cell_md), "/", nrow(md[sample == mysample]), " cells")
+  pdf(here(paste0("Figures/Heatmaps/", mysample, "_heatmap_extremecells.pdf")), 
+      w = 89 * 0.039,
+      h = 2)
+  p <- plotHeatmap(cn,
+              column_title = my_title,
+              clone_pal = extreme_cols,
+              column_title_gp = gpar(fontsize = 8),
+              linkheight = 2,
+              chrlabels = chroms,
+              show_heatmap_legend = F,
+              plotfrequency = F, 
+              frequency_height = 0.5,
+              anno_width = 0.1,
+              annofontsize = 7,
+              show_legend = F,
+              show_clone_text = F,
+              show_library_label = F,
+              #tree = cl$tree,
+              plottree = F,
+              reorderclusters = T,
+              clusters = cell_md)
+  print(p)
+  glist[[mysample]] <- grid.grabExpr(draw(p), width = 89 * 0.039, height = 2)
+  dev.off()
+}
+
+glist[["WT6"]] <- NULL
+glist %>% 
+  cowplot::plot_grid(plotlist = ., ncol = 3) %>% 
+  cowplot::plot_grid(., NULL, ncol = 1, rel_heights = c(1, 0.025)) %>% 
+  cowplot::save_plot(plot = .,
+            filename = here("Figures/Extended/EDF5.pdf"), 
+            base_height = 4 * 2 + 0.5,
+            base_width = 2 * 89 * 0.039)
+```
+
+## Individual single cells and heatmaps
+
+Heatmaps and cells for B2-16, B2-21 and B1-49.
+
+```{r}
+make_heatmap_tree <- function(mysample, clusters = NULL){
+  
+  mytree <- ape::read.tree(file = paste0(config$basedir,  glue::glue("zenododirectory/trees/{mysample}-sitka-processed.newick")))
+  if (!is.null(clusters)){
+    mytree <- ape::keep.tip(mytree, clusters$cell_id)
+  }
+  cellorder <- mytree$tip.label[mytree$edge[, 2]]
+  cnaneuploid <- dat$cn %>% filter(cell_id %in% mytree$tip.label)
+  my_title <- ""
+  chroms <- c(paste0(1:11), "13", "15", "17", "20", "X")
+  p <- plotHeatmap(cnaneuploid, 
+          tree = mytree %>% ape::ladderize(),
+          column_title = my_title,
+          column_title_gp = gpar(fontsize = 8),
+          linkheight = 2,
+          chrlabels = chroms,
+          show_heatmap_legend = F,
+          plotfrequency = F, 
+          frequency_height = 0.5,
+          anno_width = 0.02,
+          annofontsize = 7,
+          show_legend = F,
+          show_clone_text = F,
+          show_library_label = F,
+          show_clone_label = F,
+          plottree = T,
+          reorderclusters = T,
+          tree_width = 1,
+          clone_pal = c("A" = "firebrick4", "B"= "deepskyblue4"),
+          clusters = clusters)
+  pout <- grid.grabExpr(draw(p), width = 89 * 0.039, height = 2)
+  return(list(hm = pout, tree = mytree))
+}
+
+mytree <- ape::read.tree(file = paste0(config$basedir,  glue::glue("zenododirectory/trees/B2-16-sitka-processed.newick")))
+myclusters <- data.frame(cell_id = mytree$tip.label)
+myclusters <- data.frame(cell_id = mytree$tip.label) %>% mutate(clone_id = ifelse(cell_id %in% c("SA1150-A95735B-R42-C51", "SA1150-A95735B-R34-C35", "SA1150-A95735B-R44-C60", "SA1150-A95735B-R43-C30"), "A", "B")) %>% 
+  left_join(dat$metrics %>% select(cell_id, ploidy)) %>% 
+  filter(ploidy == 2)
+hm_B2_16 <- make_heatmap_tree("B2-16", clusters = myclusters)
+hm_B1_49 <- make_heatmap_tree("B1-49")
+hm_B2_18 <- make_heatmap_tree("B2-18")
+```
+
+## Number of extreme cells
+
+```{r}
+dat$metrics %>% 
+  filter(keep_cell == TRUE) %>% 
+  group_by(sample, genotype) %>% 
+  summarize(ncells = n(), extreme_cells = sum(n_aneuploid_arm > extreme_cutoff)) %>% 
+  ungroup() %>% 
+  mutate(f = extreme_cells / ncells) %>% 
+  filter(ncells >= config$cutoff) %>% 
+  mutate(idx = f) %>% 
+  mutate(mean_f = mean(f) * 100, f = f * 100) %>% 
+  knitr::kable()
+
+```
+
+```{r}
+dat$metrics %>% 
+  filter(keep_cell == TRUE) %>% 
+  group_by(sample, genotype) %>% 
+  summarize(ncells = n(), extreme_cells = sum(n_aneuploid_arm > extreme_cutoff)) %>% 
+  ungroup() %>% 
+  mutate(f = extreme_cells / ncells) %>% 
+  filter(ncells >= config$cutoff) %>% 
+  mutate(idx = f) %>% 
+  mutate(mean_f = mean(f) * 100, f = f * 100) %>% 
+  summarize(mean(mean_f))
+
+```
+
+
+```{r}
+dat$metrics %>% 
+  filter(keep_cell == TRUE) %>% 
+  filter(n_aneuploid_arm > 0) %>% 
+  group_by(n_aneuploid_arm) %>% 
+  summarise(n = n()) %>% 
+  mutate(n = n / sum(n)) %>% 
+  mutate(n_aneuploid_arm = ifelse(n_aneuploid_arm == 0, NA, n_aneuploid_arm)) %>% 
+  mutate(x = cumsum(n), x2 = 1-x) %>% 
+  knitr::kable()
+
+```
+
+```{r}
+gtopL <- dat$metrics %>% 
+  filter(cell_type1 != "Bulk") %>% 
+  filter(keep_cell == TRUE) %>% 
+  group_by(sample, genotype) %>% 
+  summarize(ncells = n(), extreme_cells = sum(n_aneuploid_arm > extreme_cutoff)) %>% 
+  ungroup() %>% 
+  mutate(f = extreme_cells / ncells) %>% 
+  filter(ncells >= config$cutoff) %>% 
+  mutate(idx = f) %>% 
+  mutate(f = ifelse(f == 0, NA, f)) %>% 
+  ggplot(aes(x = fct_reorder(sample, idx, .desc = T), 
+             y = f * 100)) +
+  geom_col(width = 0.65, fill = "grey70", col = NA) +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  #scale_fill_manual(values = config$clrs$cell_type) +
+  ylab("% of cells with > 10 \n aneuploid chromosomes") +
+  facet_grid(~genotype,  scales = "free_x", space = "free_x") +
+  labs(fill = "Cell type") +
+  theme(legend.position = c(0.8, 0.7), strip.background = element_blank())
+
+
+gtopR <- dat$metrics %>% 
+  filter(keep_cell == TRUE) %>% 
+  filter(n_aneuploid_arm > 0) %>% 
+  group_by(n_aneuploid_arm) %>% 
+  summarise(n = n()) %>% 
+  mutate(n = n / sum(n)) %>% 
+  mutate(n_aneuploid_arm = ifelse(n_aneuploid_arm == 0, NA, n_aneuploid_arm)) %>% 
+  ggplot(aes(x = n_aneuploid_arm, y = n)) +
+  geom_col(fill = "grey70", col = NA) +
+  #geom_vline(xintercept = mean(cancer_df$narm), lty = 2, col = "firebrick4") +
+  geom_vline(xintercept = extreme_cutoff, lty = 2, col = "firebrick4") +
+  xlab("# Aneuploid arms") +
+  ylab("Fraction of aneuploid cells") +
+  scale_x_continuous(limits = c(0, 20))
+```
+
+## Main Figure
+
+```{r}
+df %>% 
+  filter(clone_id == "Cancer-like") %>% 
+  arrange(sample, desc(coverage_breadth)) %>% 
+  select(sample, cell_id, ploidy, ploidy_mean, coverage_breadth) %>% 
+  print(n = 100)
+mycells %>% arrange(desc(coverage_breadth)) %>% 
+  filter(sample == "B2-16") %>% 
+  select(cell_id, ploidy, n_aneuploid_arm, cell_type1)
+#het16
+
+(gcell_b2het16_1 <- plotCNprofile(dat$cn, 
+                                cellid = "SA1150-A95706B-R39-C46", 
+                                annotateregions = gene_locations$hg19 %>% filter(ensembl_gene_symbol %in% c("TP53", "BRCA2")),
+                                maxCN = 5, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none"))
+
+(gcell_b2het16_2 <- plotCNprofile(dat$cn, 
+                                cellid = "SA1150-A95706B-R39-C35", 
+                                annotateregions = gene_locations$hg19 %>% filter(ensembl_gene_symbol %in% c("TP53", "BRCA2")),
+                                maxCN = 5, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none"))
+
+(gcell_b2het16_2 <- plotCNprofile(dat$cn, 
+                                cellid = "SA1150-A95735B-R32-C18", 
+                                annotateregions = gene_locations$hg19 %>% filter(ensembl_gene_symbol %in% c("TP53", "BRCA2")),
+                                maxCN = 5, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none"))
+
+(gcell_b2het16_3 <- plotCNprofile(dat$cn, 
+                                cellid = "SA1150-A95735B-R44-C60", 
+                                annotateregions = gene_locations$hg19 %>% dplyr::filter(ensembl_gene_symbol %in% c("TP53", "BRCA2")),
+                                maxCN = 5, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none"))
+
+(gcell_b1het49 <- plotCNprofile(dat$cn, 
+                                cellid = "AT3684-A118379B-R58-C13", 
+                                annotateregions = gene_locations$hg19 %>% filter(ensembl_gene_symbol %in% c("TP53", "BRCA1")),
+                                maxCN = 5, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none"))
+
+(gcell_b2het18 <- plotCNprofile(dat$cn, 
+                                cellid = "SA1151-A95673A-R34-C12", 
+                                annotateregions = gene_locations$hg19 %>% filter(ensembl_gene_symbol %in% c("TP53", "BRCA2", "MDM4")),
+                                maxCN = 8, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none"))
+
+gtop <- cowplot::plot_grid(cowplot::plot_grid(gtopR, gtopL, gextreme, ncol = 3, labels = c("a", "b", "c"), rel_widths = c(0.5,1,0.8), label_size = 8, align = "hv", axis = "lrtb"))
+
+gmiddle <- cowplot::plot_grid(hm_B2_16$hm, NULL,
+  cowplot::plot_grid(NULL, gcell_b2het16_1 +removexaxis + ylab(""), 
+            gcell_b2het16_2 + removexaxis, 
+            gcell_b2het16_3 + ylab(""), NULL, ncol = 1, rel_heights = c(0.2,1,1,1.4, 0.2)), 
+  ncol = 3, rel_widths = c(1, 0.05, 1), labels = c("d", "", "e"), label_size = 8)
+
+gbottom1 <- cowplot::plot_grid(hm_B1_49$hm, 
+                      NULL, 
+                      cowplot::plot_grid(NULL, gcell_b1het49, NULL, ncol = 1, rel_heights = c(0.2,1,0.2)), 
+                      ncol = 3, rel_widths = c(1, 0.05, 1))
+
+gbottom2 <- cowplot::plot_grid(hm_B2_18$hm, 
+                      NULL, 
+                      cowplot::plot_grid(NULL, gcell_b2het18, NULL, ncol = 1, rel_heights = c(0.2,1,0.2)),  
+                      ncol = 3, rel_widths = c(1, 0.05, 1))
+
+gbottom <- cowplot::plot_grid(gbottom1, 
+                     NULL,
+                     gbottom2, ncol = 1, 
+                     rel_heights = c(1, 0.05, 1),
+                    labels = c("f", "", "g"), label_size = 8)
+
+gfinal <- cowplot::plot_grid(gtop, gmiddle, gbottom, ncol = 1, rel_heights = c(0.8,1,1.2))
+
+gfinal %>% 
+  cowplot::save_plot(here("Figures/Main/fig4.pdf"), ., 
+            base_width = 2 * 89 * 0.039, base_height = 7)
+```
+
+
+```{r, fig.height=7}
+gfinal
+```
+
+## EDF 7
+
+Examples of non cancer-like extreme aneuploidy cells.
+
+```{r}
+maxCN <- 6
+(gcell1 <- plotCNprofile(dat$cn, 
+                                cellid = "SA1227-A98270B-R44-C42", 
+                                maxCN = maxCN, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none") +
+    ggtitle("B2-23: SA1227-A98270B-R44-C42") +
+    theme(plot.title = element_text(face = "plain")))
+
+(gcell2a <- plotCNprofile(dat$cn, 
+                                cellid = "SA1227-A98295A-R23-C26", 
+                                maxCN = maxCN, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none")+
+    ggtitle("B2-23: SA1227−A98295A−R23−C26") +
+    theme(plot.title = element_text(face = "plain")))
+
+(gcell2 <- plotCNprofile(dat$cn, 
+                                cellid = "SA1227-A98302B-R58-C43", 
+                                maxCN = maxCN, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none")+
+    ggtitle("B2-23: SA1227-A98302B-R58-C43") +
+    theme(plot.title = element_text(face = "plain")))
+
+(gcell3 <- plotCNprofile(dat$cn, 
+                                cellid = "SA1150-A95718A-R14-C16", 
+                                maxCN = maxCN, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none")+
+    ggtitle("B2-16: SA1150-A95718A-R14-C16") +
+    theme(plot.title = element_text(face = "plain")))
+
+(gcell4 <- plotCNprofile(dat$cn, 
+                                cellid = "AT3684-A118379B-R52-C25", 
+                                maxCN = maxCN, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none")+
+    ggtitle("B1-49: AT3684-A118379B-R52-C25") +
+    theme(plot.title = element_text(face = "plain")))
+
+(gcell5 <- plotCNprofile(dat$cn, 
+                                cellid = "SA1198-A118837A-R03-C53", 
+                                maxCN = maxCN, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none")+
+    ggtitle("WT-8: SA1198-A118837A-R03-C53") +
+    theme(plot.title = element_text(face = "plain")))
+
+(gcell6 <- plotCNprofile(dat$cn, 
+                                cellid = "AT13221-A118355A-R23-C60", 
+                                maxCN = maxCN, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none")+
+    ggtitle("B1-6550: AT13221-A118355A-R23-C60") +
+    theme(plot.title = element_text(face = "plain")))
+
+cowplot::plot_grid(gcell1, gcell2,
+          gcell3, gcell4,
+          gcell5, gcell6, ncol = 2, labels = letters[1:6], label_size = 8) %>% 
+  cowplot::save_plot(here("Figures/Extended/EDF7.pdf"), ., 
+            base_width = 2 * 89 * 0.039, base_height = 3.5)
+  
+```
+
+## EDF8
+
+Example of high level amplifications
+
+```{r}
+segs <- dat$cn %>% create_segments()
+
+mycells <- segs %>% 
+  mutate(width = (end = start / 1e6)) %>% 
+  left_join(dat$metrics %>% select(cell_id, ploidy_compare)) %>% 
+  mutate(state_pl = state / ploidy_compare) %>% 
+  filter(state_pl > 2 & width > 2.5) %>% 
+  pull(cell_id) %>% unique()
+
+
+# pdf(here("Figures/Other/hlamp_cells.pdf"), width = 12, h = 3)
+# for (mycell in mycells){
+#   mycells_filt <- filter(dat$metrics, cell_id == mycell)
+#   mytitle <- paste(mycells_filt$sample, mycells_filt$cell_type1, mycells_filt$genotype, mycells_filt$cell_id, sep = ", ")
+#   print(mycell)
+#   g <- plotCNprofile(dat$cn, cellid = mycell, maxCN = 12, y_axis_trans = "squashy", pointsize = 1.0) +
+#     theme_cowplot(font_size = 8, line_size = 0.25) +
+#     ggtitle(mytitle) +
+#     theme(legend.position = "none")
+#   print(g)
+# }
+# dev.off()
+
+```
+
+```{r}
+gtop <- dat$metrics %>% 
+  filter(cell_type1 %in% c("Luminal", "Basal")) %>% 
+  filter(keep_cell == TRUE) %>% 
+  group_by(sample, genotype) %>% 
+  summarize(ncells = n(), extreme_cells = sum(cell_id %in% mycells)) %>% 
+  ungroup() %>% 
+  mutate(f = extreme_cells / ncells) %>% 
+  filter(ncells >= config$cutoff) %>% 
+  mutate(idx = f) %>% 
+  mutate(f = ifelse(f == 0, NA, f)) %>% 
+  ggplot(aes(x = fct_reorder(sample, idx, .desc = T), 
+             y = f * 100)) +
+  geom_col(width = 0.65, fill = "grey70", col = NA) +
+  xlab("") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  #scale_fill_manual(values = config$clrs$cell_type) +
+  ylab("% of cells with\nhigh-level ampl.") +
+  facet_grid(~genotype,  scales = "free_x", space = "free_x") +
+  theme_cowplot(font_size = 8, line_size = 0.25) +
+  labs(fill = "Cell type") +
+  theme(legend.position = c(0.8, 0.7), strip.background = element_blank())
+
+
+maxCN <- 10
+(gcell1 <- plotCNprofile(dat$cn, genes = "CCND1",
+                                cellid = "AT22507-A138951A-R03-C23",
+                                maxCN = maxCN, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none") +
+    ggtitle("B1-6548: AT22507-A138951A-R03-C23") +
+    theme(plot.title = element_text(face = "plain")))
+
+(gcell2 <- plotCNprofile(dat$cn, 
+                                cellid = "AT22513-A138854A-R05-C55", 
+                                maxCN = maxCN, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none")+
+    ggtitle("B2-6532: AT22513-A138854A-R05-C55") +
+    theme(plot.title = element_text(face = "plain")))
+
+(gcell3 <- plotCNprofile(dat$cn, 
+                                cellid = "AT25277-A143945A-R19-C08", annotateregions = gene_locations$hg19 %>% filter(ensembl_gene_symbol == "MIR21"),
+                                maxCN = maxCN, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none")+
+    ggtitle("WT-7450: AT25277-A143945A-R19-C08") +
+    theme(plot.title = element_text(face = "plain")))
+
+(gcell4 <- plotCNprofile(dat$cn, annotateregions = data.frame(chr = "6", start = 106e6),
+                                cellid = "SA1152-A108835A-R12-C12", 
+                                maxCN = maxCN, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none")+
+    ggtitle("B2-21: SA1152-A108835A-R12-C12") +
+    theme(plot.title = element_text(face = "plain")))
+
+(gcell5 <- plotCNprofile(dat$cn,
+                                cellid = "SA1150-A95735B-R44-C68", 
+                                maxCN = maxCN, pointsize = 0.25) + 
+    theme_cowplot(font_size = 8, line_size = 0.25) + 
+    theme(legend.position = "none")+
+    ggtitle("B2-16: SA1150-A95735B-R44-C68") +
+    theme(plot.title = element_text(face = "plain")))
+
+
+cowplot::plot_grid(gtop, 
+                   gcell1, gcell2,
+          gcell3, gcell4,gcell5, ncol = 2, labels = letters[1:6], label_size = 8) %>% 
+  cowplot::save_plot(here("Figures/Extended/EDF8.pdf"), ., 
+            base_width = 2 * 89 * 0.039, base_height = 4.5)
+```
+
+```{r, fig.height = 4.5}
+cowplot::plot_grid(gtop, 
+                   gcell1, gcell2,
+          gcell3, gcell4,gcell5, ncol = 2, labels = letters[1:6], label_size = 8)
+
+```
+
+## session info
+
+```{r}
+sessionInfo()
+```
