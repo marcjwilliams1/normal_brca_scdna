@@ -4,7 +4,7 @@ Code to reproduce figures from Williams, Oliphant and Au et al. "Luminal breast 
 
 ## Steps to run code
 
-1. Download the processed data from [zenodo](https://zenodo.org/records/13645602) and call the folder zenododirectory.
+1. Download the processed data from [zenodo](10.5281/zenodo.13645601) and call the folder zenododirectory.
 2. Change the path of `basedir` in `config.yaml` to point to the directory above where the zenodo folder has been placed.
 3. Download processed cancer data from [zenodo](https://zenodo.org/records/13898350) and set `cancerdir` in `config.yaml`.
 4. Run code (in `scripts/`) for each of the figures.
