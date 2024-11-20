@@ -1,7 +1,6 @@
 ## Summary
 
-Code to reproduce figures from Williams, Oliphant and Au et al. "Luminal breast epithelial cells of BRCA1 or BRCA2 mutation carriers and non-carriers harbor common breast cancer copy number alterations".
-
+Code to reproduce figures from [Williams, Oliphant and Au et al. "Luminal breast epithelial cells of BRCA1 or BRCA2 mutation carriers and non-carriers harbor common breast cancer copy number alterations"](https://www.nature.com/articles/s41588-024-01988-0)
 ## Steps to run code
 
 1. Download the processed data from [zenodo](10.5281/zenodo.13645601) and call the folder zenododirectory.
